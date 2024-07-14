@@ -12,6 +12,7 @@ mod scanner;
 #[derive(Debug, Deserialize)]
 struct Config {
     print: Option<print::PrintConfig>,
+    decoder: Option<scanner::DecoderConfig>,
     scanner: Option<scanner::ScannerConfig>,
     connection: Option<connection::ConnectionConfig>,
 }
@@ -57,7 +58,13 @@ async fn main() -> eyre::Result<()> {
 
     if let Some(scanner) = config.scanner {
         info!("scanner enabled");
-        scanner::setup_scanners(scanner, token.child_token(), scanner_tx).await?;
+        scanner::setup_scanners(
+            scanner,
+            config.decoder.unwrap_or_default(),
+            token.child_token(),
+            scanner_tx,
+        )
+        .await?;
     }
 
     let (connection_tx, mut connection_rx) = channel(1);

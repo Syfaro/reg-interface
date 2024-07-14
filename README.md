@@ -7,7 +7,7 @@ The core features are:
 
 - Scan, decode, and transmit barcode data by:
   - Connecting to barcode scanners (via serial or USB HID)
-  - Decoding scanned barcodes (like AAMVA ID barcodes)
+  - Decoding scanned barcodes (like AAMVA ID barcodes or SMART health cards)
   - Transforming decoded data into a desired format
   - Sending that data to a desination via HTTP, WebSocket, or MQTT
 - Allow remote systems to print via a local printer

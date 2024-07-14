@@ -13,10 +13,20 @@ use crate::scanner::ScannedData;
 
 use super::ScanResult;
 
+mod shc;
+
+pub use shc::ShcData;
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct DecoderConfig {
+    shc: shc::ShcConfig,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecoderType {
     Aamva,
+    Shc,
     Url,
     Generic,
 }
@@ -25,6 +35,7 @@ impl std::fmt::Display for DecoderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aamva => write!(f, "AAMVA"),
+            Self::Shc => write!(f, "SHC"),
             Self::Url => write!(f, "URL"),
             Self::Generic => write!(f, "Generic"),
         }
@@ -33,9 +44,14 @@ impl std::fmt::Display for DecoderType {
 
 impl DecoderType {
     pub fn all() -> HashSet<Self> {
-        [DecoderType::Aamva, DecoderType::Url, DecoderType::Generic]
-            .into_iter()
-            .collect()
+        [
+            DecoderType::Aamva,
+            DecoderType::Shc,
+            DecoderType::Url,
+            DecoderType::Generic,
+        ]
+        .into_iter()
+        .collect()
     }
 }
 
@@ -44,19 +60,28 @@ pub struct Decoder {
     open_urls: Vec<bool>,
     transformers: Vec<Option<Mutex<(Engine, AST)>>>,
     connection_targets: Vec<Option<Arc<HashSet<String>>>>,
+
+    shc_decoder: shc::ShcDecoder,
 }
 
 impl Decoder {
-    pub fn new(config: &super::ScannerConfig) -> eyre::Result<Self> {
-        let input_decoders = config
+    pub async fn new(
+        scanner_config: &super::ScannerConfig,
+        decoder_config: DecoderConfig,
+    ) -> eyre::Result<Self> {
+        let input_decoders = scanner_config
             .inputs
             .iter()
             .map(|input| input.decoders.clone())
             .collect();
 
-        let open_urls = config.inputs.iter().map(|input| input.open_urls).collect();
+        let open_urls = scanner_config
+            .inputs
+            .iter()
+            .map(|input| input.open_urls)
+            .collect();
 
-        let transformers = config
+        let transformers = scanner_config
             .inputs
             .iter()
             .map(|input| {
@@ -75,17 +100,20 @@ impl Decoder {
             })
             .collect::<Result<Vec<_>, eyre::Report>>()?;
 
-        let connection_targets = config
+        let connection_targets = scanner_config
             .inputs
             .iter()
             .map(|input| input.connection_targets.clone())
             .collect();
+
+        let shc_decoder = shc::ShcDecoder::new(decoder_config.shc).await?;
 
         Ok(Self {
             input_decoders,
             open_urls,
             transformers,
             connection_targets,
+            shc_decoder,
         })
     }
 
@@ -175,9 +203,15 @@ impl Decoder {
     ) -> Option<super::ScannedData> {
         let decoder_types = &self.input_decoders[input_id];
 
-        if decoder_types.contains(&DecoderType::Aamva) {
+        if data.starts_with('@') && decoder_types.contains(&DecoderType::Aamva) {
             if let Ok(data) = aamva::parse_barcode(&data) {
                 return Some(ScannedData::Aamva(Box::new(data.into())));
+            }
+        }
+
+        if data.starts_with("shc:/") && decoder_types.contains(&DecoderType::Shc) {
+            if let Ok(data) = self.shc_decoder.decode(&data).await {
+                return Some(ScannedData::Shc(Box::new(data)));
             }
         }
 

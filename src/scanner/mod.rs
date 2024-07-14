@@ -15,7 +15,7 @@ use tracing::{debug, error, info, trace, warn, Instrument};
 mod decoder;
 mod input;
 
-pub use decoder::DecoderType;
+pub use decoder::{DecoderConfig, DecoderType};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ScannerConfig {
@@ -26,6 +26,7 @@ pub struct ScannerConfig {
 #[serde(rename_all = "snake_case", tag = "data_type")]
 pub enum ScannedData {
     Aamva(Box<aamva::DecodedData>),
+    Shc(Box<decoder::ShcData>),
     Url { url: String },
     Generic { data: String },
 }
@@ -34,6 +35,7 @@ impl ScannedData {
     pub fn decoder_type(&self) -> decoder::DecoderType {
         match self {
             Self::Aamva(_) => decoder::DecoderType::Aamva,
+            Self::Shc(_) => decoder::DecoderType::Shc,
             Self::Url { .. } => decoder::DecoderType::Url,
             Self::Generic { .. } => decoder::DecoderType::Generic,
         }
@@ -62,15 +64,16 @@ impl ScanResult {
 }
 
 pub async fn setup_scanners(
-    config: ScannerConfig,
+    scanner_config: ScannerConfig,
+    decoder_config: DecoderConfig,
     token: CancellationToken,
     scanned_data_tx: Sender<ScanResult>,
 ) -> eyre::Result<()> {
     let (tx, rx) = channel(1);
 
-    let decoder = decoder::Decoder::new(&config)?;
+    let decoder = decoder::Decoder::new(&scanner_config, decoder_config).await?;
 
-    input::connect_scanner_inputs(config.inputs, token.clone(), tx).await?;
+    input::connect_scanner_inputs(scanner_config.inputs, token.clone(), tx).await?;
     tokio::spawn(decode_inputs(decoder, token, rx, scanned_data_tx).in_current_span());
 
     Ok(())
