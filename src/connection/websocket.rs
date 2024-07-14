@@ -99,7 +99,10 @@ impl super::Connection for WebSocketConnection {
         &self.supported_decoders
     }
 
-    async fn send(&self, data: &serde_json::Value) -> eyre::Result<()> {
-        self.tx.send(data.to_owned()).await.map_err(Into::into)
+    async fn send(&self, result: &crate::scanner::ScanResult) -> eyre::Result<()> {
+        self.tx
+            .send(result.data_to_send()?.into_owned())
+            .await
+            .map_err(Into::into)
     }
 }

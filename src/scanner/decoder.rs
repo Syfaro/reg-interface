@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -98,59 +98,73 @@ impl Decoder {
             return Ok(None);
         };
 
-        let (transformed_data, connection_targets) =
-            if let Some(transformer) = &self.transformers[input_id] {
-                let transformer = transformer.lock().unwrap();
-                let (engine, ast) = &*transformer;
+        let (transformed_data, connection_targets, extras) = if let Some(transformer) =
+            &self.transformers[input_id]
+        {
+            let transformer = transformer.lock().unwrap();
+            let (engine, ast) = &*transformer;
 
-                let mut scope = Scope::new();
+            let mut scope = Scope::new();
 
-                let map_data: rhai::Map = serde_json::from_value(serde_json::to_value(&data)?)?;
-                scope.push_constant("SCANNED_DATA", map_data);
+            let map_data: rhai::Map = serde_json::from_value(serde_json::to_value(&data)?)?;
+            scope.push_constant("SCANNED_DATA", map_data);
 
-                let result: rhai::Dynamic = engine.eval_ast_with_scope(&mut scope, ast)?;
-                trace!("got result from transformer: {result:?}");
+            let result: rhai::Dynamic = engine.eval_ast_with_scope(&mut scope, ast)?;
+            trace!("got result from transformer: {result:?}");
 
-                if let ScannedData::Url { url } = &data {
-                    let open = scope
-                        .get_value("OPEN_URL")
-                        .tap_some(|open| trace!(open, "transformer had opinion about opening url"))
-                        .unwrap_or(self.open_urls[input_id]);
+            if let ScannedData::Url { url } = &data {
+                let open = scope
+                    .get_value("OPEN_URL")
+                    .tap_some(|open| trace!(open, "transformer had opinion about opening url"))
+                    .unwrap_or(self.open_urls[input_id]);
 
-                    if open {
-                        debug!(url, "opening url");
-                        if let Err(err) = open::that_detached(url) {
-                            error!("could not open url: {err}");
-                        }
+                if open {
+                    debug!(url, "opening url");
+                    if let Err(err) = open::that_detached(url) {
+                        error!("could not open url: {err}");
                     }
                 }
+            }
 
-                let connection_targets = scope
-                    .get_value::<rhai::Array>("CONNECTION_TARGETS")
-                    .tap_some(|targets| trace!(?targets, "got targets from transformer"))
-                    .map(|targets| {
-                        let targets = targets
-                            .into_iter()
-                            .filter_map(|target| target.into_string().ok());
-                        Some(Arc::new(HashSet::from_iter(targets)))
-                    })
-                    .unwrap_or_else(|| self.connection_targets[input_id].clone());
+            let connection_targets = scope
+                .get_value::<rhai::Array>("CONNECTION_TARGETS")
+                .tap_some(|targets| trace!(?targets, "got targets from transformer"))
+                .map(|targets| {
+                    let targets = targets
+                        .into_iter()
+                        .filter_map(|target| target.into_string().ok());
+                    Some(Arc::new(HashSet::from_iter(targets)))
+                })
+                .unwrap_or_else(|| self.connection_targets[input_id].clone());
 
-                if result.is_unit() {
-                    trace!("result was unit, ignoring transformer");
-                    (None, connection_targets)
-                } else {
-                    (Some(serde_json::to_value(result)?), connection_targets)
-                }
+            let extras: HashMap<String, String> = serde_json::from_value(serde_json::to_value(
+                scope.get_value::<rhai::Map>("EXTRAS").unwrap_or_default(),
+            )?)?;
+
+            if result.is_unit() {
+                trace!("result was unit, ignoring transformer");
+                (None, connection_targets, extras)
             } else {
-                (None, self.connection_targets[input_id].clone())
-            };
+                (
+                    Some(serde_json::to_value(result)?),
+                    connection_targets,
+                    extras,
+                )
+            }
+        } else {
+            (
+                None,
+                self.connection_targets[input_id].clone(),
+                Default::default(),
+            )
+        };
 
         Ok(Some(ScanResult {
             input_id,
             data,
             transformed_data,
             connection_targets,
+            extras,
         }))
     }
 

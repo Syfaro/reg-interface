@@ -57,8 +57,12 @@ impl super::Connection for HttpConnection {
         &self.supported_decoders
     }
 
-    async fn send(&self, data: &serde_json::Value) -> eyre::Result<()> {
-        self.client.post(self.url.clone()).json(data).send().await?;
+    async fn send(&self, result: &crate::scanner::ScanResult) -> eyre::Result<()> {
+        self.client
+            .post(self.url.clone())
+            .json(&result.data_to_send()?)
+            .send()
+            .await?;
 
         Ok(())
     }

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -71,7 +68,7 @@ pub trait Connection: Send + Sync + 'static {
     fn name(&self) -> &str;
     fn supported_decoder_types(&self) -> &HashSet<crate::scanner::DecoderType>;
 
-    async fn send(&self, data: &serde_json::Value) -> eyre::Result<()>;
+    async fn send(&self, data: &crate::scanner::ScanResult) -> eyre::Result<()>;
 }
 
 pub struct ConnectionManager {
@@ -79,13 +76,10 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    #[instrument(skip(self, data, connection_targets))]
-    pub async fn send(
-        &self,
-        decoder_type: crate::scanner::DecoderType,
-        connection_targets: Option<Arc<HashSet<String>>>,
-        data: serde_json::Value,
-    ) -> eyre::Result<()> {
+    #[instrument(skip(self, result))]
+    pub async fn send(&self, result: crate::scanner::ScanResult) -> eyre::Result<()> {
+        let decoder_type = result.data.decoder_type();
+
         for connection in self.connections.iter() {
             if !connection.supported_decoder_types().contains(&decoder_type) {
                 trace!(
@@ -95,7 +89,7 @@ impl ConnectionManager {
                 continue;
             }
 
-            if matches!(connection_targets.as_ref(), Some(targets) if !targets.contains(connection.name()))
+            if matches!(result.connection_targets.as_ref(), Some(targets) if !targets.contains(connection.name()))
             {
                 trace!(
                     name = connection.name(),
@@ -108,7 +102,7 @@ impl ConnectionManager {
                 name = connection.name(),
                 "sending data to connection target"
             );
-            connection.send(&data).await?;
+            connection.send(&result).await?;
         }
 
         Ok(())

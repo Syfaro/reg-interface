@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use tokio::{
@@ -10,7 +10,7 @@ use tracing::{error, info, trace, warn};
 
 pub struct MqttConnection {
     name: String,
-    tx: Sender<serde_json::Value>,
+    tx: Sender<(serde_json::Value, HashMap<String, String>)>,
     supported_decoders: HashSet<crate::scanner::DecoderType>,
 }
 
@@ -22,7 +22,7 @@ impl MqttConnection {
         token: CancellationToken,
         action_tx: Sender<super::ConnectionAction>,
     ) -> eyre::Result<Self> {
-        let (tx, mut rx) = channel::<serde_json::Value>(1);
+        let (tx, mut rx) = channel::<(serde_json::Value, HashMap<String, String>)>(1);
         let options = rumqttc::MqttOptions::parse_url(config.url)?;
         let (client, mut event_loop) = rumqttc::AsyncClient::new(options, 1);
 
@@ -76,15 +76,17 @@ impl MqttConnection {
                     }
 
                     data = rx.recv() => {
-                        let Some(data) = data else {
+                        let Some((data, extras)) = data else {
                             info!("mqtt data channel ended, ending task");
                             break;
                         };
 
-                        trace!("sending data to mqtt");
+                        let topic = extras.get("mqtt_topic").unwrap_or(&config.publish_topic);
+
+                        trace!(topic, "sending data to mqtt");
 
                         let json = serde_json::to_string(&data).expect("could not serialize data");
-                        if let Err(err) = client.publish(&config.publish_topic, rumqttc::QoS::AtMostOnce, false, json).await {
+                        if let Err(err) = client.publish(topic, rumqttc::QoS::AtMostOnce, false, json).await {
                             error!("could not send mqtt message: {err}");
                         }
                     }
@@ -110,7 +112,10 @@ impl super::Connection for MqttConnection {
         &self.supported_decoders
     }
 
-    async fn send(&self, data: &serde_json::Value) -> eyre::Result<()> {
-        self.tx.send(data.to_owned()).await.map_err(Into::into)
+    async fn send(&self, result: &crate::scanner::ScanResult) -> eyre::Result<()> {
+        self.tx
+            .send((result.data_to_send()?.into_owned(), result.extras.clone()))
+            .await
+            .map_err(Into::into)
     }
 }

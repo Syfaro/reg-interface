@@ -141,19 +141,7 @@ async fn process_data(
     trace!("got result: {result:?}");
 
     if let Some(connection_manager) = connection_manager {
-        let decoder_type = result.data.decoder_type();
-
-        let data = if let Some(transformed_data) = result.transformed_data {
-            trace!("using transformed data");
-            transformed_data
-        } else {
-            trace!("using original data");
-            serde_json::to_value(result.data)?
-        };
-
-        connection_manager
-            .send(decoder_type, result.connection_targets, data)
-            .await?;
+        connection_manager.send(result).await?;
     }
 
     Ok(())

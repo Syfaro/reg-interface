@@ -3,6 +3,15 @@
 A utility to run locally on staff registration computers to decode and send
 barcodes to a backend, and permit printing using local printers.
 
+The core features are:
+
+- Scan, decode, and transmit barcode data by:
+  - Connecting to barcode scanners (via serial or USB HID)
+  - Decoding scanned barcodes (like AAMVA ID barcodes)
+  - Transforming decoded data into a desired format
+  - Sending that data to a desination via HTTP, WebSocket, or MQTT
+- Allow remote systems to print via a local printer
+
 ## Configuration
 
 A config.toml must be present in the working directory or available at a path
@@ -80,6 +89,9 @@ can be filtered by setting the `connection_targets` option. For more control,
 the transformer can set the `CONNECTION_TARGETS` variable to an array of target
 names.
 
+Some targets may support reading config overrides from an `EXTRAS` variable
+defined within the transformer.
+
 [Rhai]: https://rhai.rs
 
 ### Connections
@@ -113,3 +125,6 @@ action_topic = "client/12345/action"
 
 If the target supports bidirectional communication (WebSockets or MQTT), you
 may enable `allow_actions` to process actions coming from the target.
+
+The MQTT target supports reading a topic override from `mqtt_topic` in the
+transformer's `EXTRAS` variable.

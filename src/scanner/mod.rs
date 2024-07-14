@@ -1,4 +1,8 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -26,20 +30,33 @@ pub enum ScannedData {
     Generic { data: String },
 }
 
-#[derive(Clone, Debug)]
-pub struct ScanResult {
-    pub input_id: usize,
-    pub data: ScannedData,
-    pub transformed_data: Option<serde_json::Value>,
-    pub connection_targets: Option<Arc<HashSet<String>>>,
-}
-
 impl ScannedData {
     pub fn decoder_type(&self) -> decoder::DecoderType {
         match self {
             Self::Aamva(_) => decoder::DecoderType::Aamva,
             Self::Url { .. } => decoder::DecoderType::Url,
             Self::Generic { .. } => decoder::DecoderType::Generic,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScanResult {
+    pub input_id: usize,
+    pub data: ScannedData,
+    pub transformed_data: Option<serde_json::Value>,
+    pub connection_targets: Option<Arc<HashSet<String>>>,
+    pub extras: HashMap<String, String>,
+}
+
+impl ScanResult {
+    pub fn data_to_send(&self) -> eyre::Result<Cow<'_, serde_json::Value>> {
+        if let Some(transformed_data) = self.transformed_data.as_ref() {
+            Ok(Cow::Borrowed(transformed_data))
+        } else {
+            serde_json::to_value(self.data.clone())
+                .map(Cow::Owned)
+                .map_err(Into::into)
         }
     }
 }
