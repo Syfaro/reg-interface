@@ -5,8 +5,8 @@ use std::{
 
 use rhai::{Engine, Scope, AST};
 use serde::{Deserialize, Serialize};
-use tap::TapOptional;
-use tracing::{debug, error, trace};
+use tap::{TapFallible, TapOptional};
+use tracing::{debug, error, trace, warn};
 use url::Url;
 
 use crate::scanner::ScannedData;
@@ -204,13 +204,20 @@ impl Decoder {
         let decoder_types = &self.input_decoders[input_id];
 
         if data.starts_with('@') && decoder_types.contains(&DecoderType::Aamva) {
-            if let Ok(data) = aamva::parse_barcode(&data) {
+            if let Ok(data) = aamva::parse_barcode(&data)
+                .tap_err(|err| warn!("expected aamva data could not be decoded: {err}"))
+            {
                 return Some(ScannedData::Aamva(Box::new(data.into())));
             }
         }
 
         if data.starts_with("shc:/") && decoder_types.contains(&DecoderType::Shc) {
-            if let Ok(data) = self.shc_decoder.decode(&data).await {
+            if let Ok(data) = self
+                .shc_decoder
+                .decode(&data)
+                .await
+                .tap_err(|err| warn!("expected shc data could not be decoded: {err}"))
+            {
                 return Some(ScannedData::Shc(Box::new(data)));
             }
         }

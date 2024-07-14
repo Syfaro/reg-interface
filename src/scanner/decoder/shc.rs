@@ -3,45 +3,59 @@ use std::{
     collections::HashMap,
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use eyre::OptionExt;
+use eyre::{bail, OptionExt};
 use futures::StreamExt;
 use jsonwebtoken::jwk::JwkSet;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, PickFirst};
-use time::{macros::format_description, Date};
-use tracing::{debug, instrument, warn};
+use smol_str::SmolStr;
+use tap::TapOptional;
+use time::{
+    format_description::well_known::Rfc3339, macros::format_description, Date, PrimitiveDateTime,
+};
+use tracing::{debug, instrument, trace, warn};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ShcConfig {
     #[serde(default)]
     skip_updates: bool,
+    #[serde(default)]
+    prohibit_lookups: bool,
+    #[serde(default = "default_cache_dir")]
     cache_dir: PathBuf,
 }
 
 impl Default for ShcConfig {
     fn default() -> Self {
         Self {
+            prohibit_lookups: false,
             skip_updates: false,
-            cache_dir: PathBuf::from("shc-cache"),
+            cache_dir: default_cache_dir(),
         }
     }
 }
 
+fn default_cache_dir() -> PathBuf {
+    PathBuf::from("shc-cache")
+}
+
 pub struct ShcDecoder {
+    prohibit_lookups: bool,
     client: reqwest::Client,
     vci_issuers: Vec<VciIssuerMeta>,
-    cvx_codes: HashMap<u32, CvxCode>,
+    cvx_codes: HashMap<SmolStr, Arc<CvxCode>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShcData {
     pub verified: bool,
-    pub entries: Vec<FhirBundleEntry>,
     pub issuer: VciIssuer,
-    pub cvx_codes: HashMap<u32, CvxCode>,
+    pub cvx_codes: HashMap<SmolStr, Arc<CvxCode>>,
+    pub entries: Vec<FhirBundleEntry>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -65,7 +79,7 @@ struct VciIssuerMeta {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CvxCode {
-    pub code: u32,
+    pub code: SmolStr,
     pub short_description: String,
     pub full_name: String,
     pub notes: String,
@@ -74,8 +88,8 @@ pub struct CvxCode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FhirBundleEntry {
-    #[serde(rename = "fullUrl")]
     pub full_url: String,
     pub resource: FhirBundleEntryResource,
 }
@@ -83,20 +97,97 @@ pub struct FhirBundleEntry {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "resourceType", rename_all_fields = "camelCase")]
 pub enum FhirBundleEntryResource {
-    Patient {
-        birth_date: String,
-        name: Vec<PatientName>,
-    },
-    Immunization {
-        lot_number: Option<String>,
-        occurrence_date_time: String,
-        patient: Reference,
-        performer: Vec<Performer>,
-        status: String,
-        vaccine_code: VaccineCode,
-    },
+    Patient(FhirPatient),
+    Immunization(FhirImmunization),
     #[serde(untagged)]
     Other(serde_json::Value),
+}
+
+#[derive(Clone, Debug)]
+pub enum FhirDateTime {
+    Date { date: Date },
+    DateTime { date_time: PrimitiveDateTime },
+    YearMonth { year: u64, month: u64 },
+    Year { year: u64 },
+}
+
+impl serde::Serialize for FhirDateTime {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        static DATE_FORMAT: &[time::format_description::FormatItem<'_>] =
+            format_description!("[year]-[month]-[day]");
+
+        match self {
+            Self::Date { date } => serializer.serialize_str(
+                &date
+                    .format(&DATE_FORMAT)
+                    .map_err(serde::ser::Error::custom)?,
+            ),
+            Self::DateTime { date_time } => serializer.serialize_str(
+                &date_time
+                    .format(&Rfc3339)
+                    .map_err(serde::ser::Error::custom)?,
+            ),
+            Self::YearMonth { year, month } => {
+                serializer.collect_str(&format_args!("{year:04}-{month:02}"))
+            }
+            Self::Year { year } => serializer.collect_str(&format_args!("{year:04}")),
+        }
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for FhirDateTime {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let data: String = serde::Deserialize::deserialize(deserializer)?;
+
+        static DATE_FORMAT: &[time::format_description::FormatItem<'_>] =
+            format_description!("[year]-[month]-[day]");
+
+        let year_month_format = Regex::new(r"(\d{4})-(\d{2})").unwrap();
+        let year_format = Regex::new(r"\d{4}").unwrap();
+
+        if let Ok(date) = Date::parse(&data, &DATE_FORMAT) {
+            Ok(Self::Date { date })
+        } else if let Ok(date_time) = PrimitiveDateTime::parse(&data, &Rfc3339) {
+            Ok(Self::DateTime { date_time })
+        } else if let Some(captures) = year_month_format.captures(&data) {
+            Ok(Self::YearMonth {
+                year: captures[1].parse().map_err(serde::de::Error::custom)?,
+                month: captures[2].parse().map_err(serde::de::Error::custom)?,
+            })
+        } else if year_format.is_match(&data) {
+            Ok(Self::Year {
+                year: data.parse().map_err(serde::de::Error::custom)?,
+            })
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unknown date format: {data}"
+            )))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FhirPatient {
+    birth_date: FhirDateTime,
+    name: Vec<PatientName>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FhirImmunization {
+    lot_number: Option<String>,
+    occurrence_date_time: FhirDateTime,
+    patient: Reference,
+    performer: Vec<Performer>,
+    status: String,
+    vaccine_code: VaccineCode,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -125,11 +216,9 @@ pub struct VaccineCode {
     pub coding: Vec<Coding>,
 }
 
-#[serde_as]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Coding {
-    #[serde_as(as = "PickFirst<(_, DisplayFromStr)>")]
-    pub code: u32,
+    pub code: SmolStr,
     pub system: String,
 }
 
@@ -148,18 +237,30 @@ impl ShcDecoder {
             tokio::fs::create_dir_all(&config.cache_dir).await?;
         }
 
-        let vci_issuers =
-            Self::load_vci_issuers(&client, config.cache_dir.join("vci.json").as_path()).await?;
-        let cvx_codes =
-            Self::load_cvx_codes(&client, config.cache_dir.join("cvx.json").as_path()).await?;
-
-        Ok(Self {
+        let mut shc_decoder = Self {
+            prohibit_lookups: config.prohibit_lookups,
             client,
-            vci_issuers,
-            cvx_codes,
-        })
+            vci_issuers: Default::default(),
+            cvx_codes: Default::default(),
+        };
+
+        shc_decoder.vci_issuers = shc_decoder
+            .load_vci_issuers(
+                config.cache_dir.join("vci.json").as_path(),
+                config.skip_updates,
+            )
+            .await?;
+        shc_decoder.cvx_codes = shc_decoder
+            .load_cvx_codes(
+                config.cache_dir.join("cvx.json").as_path(),
+                config.skip_updates,
+            )
+            .await?;
+
+        Ok(shc_decoder)
     }
 
+    #[instrument(skip_all, fields(iss))]
     pub async fn decode(&self, data: &str) -> eyre::Result<ShcData> {
         let data = data
             .trim()
@@ -175,6 +276,7 @@ impl ShcDecoder {
             decoded_data.push(ch);
         }
         let header = jsonwebtoken::decode_header(&decoded_data)?;
+        trace!(?header, "got jwt header");
 
         let payload_parts: Vec<_> = decoded_data.split('.').collect();
         eyre::ensure!(payload_parts.len() == 3, "must have exactly 3 parts");
@@ -182,6 +284,8 @@ impl ShcDecoder {
         let header_data: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_parts[0])?)?;
         let main_data: Cow<'_, str> = if header_data["zip"].as_str() == Some("DEF") {
+            trace!("header marked data as compressed");
+
             let main_data = URL_SAFE_NO_PAD.decode(payload_parts[1])?;
 
             let mut deflater = flate2::read::DeflateDecoder::new(main_data.as_slice());
@@ -190,15 +294,20 @@ impl ShcDecoder {
             deflater.read_to_string(&mut decompressed_data)?;
             decompressed_data.into()
         } else {
+            trace!("data was not marked as compressed");
             payload_parts[1].into()
         };
 
         let mut main_data: serde_json::Value = serde_json::from_str(&main_data)?;
+        trace!("decoded main data: {main_data:?}");
 
         let iss = main_data["iss"]
             .as_str()
             .ok_or_eyre("data was missing issuer")?;
-        let kid = header.kid.ok_or_eyre("header was missing key ID")?;
+        let kid = header.kid.ok_or_eyre("header was missing key id")?;
+
+        tracing::Span::current().record("iss", iss);
+        debug!("extracted iss from jwt");
 
         let issuer = self
             .vci_issuers
@@ -206,32 +315,43 @@ impl ShcDecoder {
             .find(|issuer| issuer.jwk_set.find(&kid).is_some());
 
         let issuer = if let Some(issuer) = issuer {
-            issuer.clone()
+            debug!("issuer was known");
+            Some(issuer.clone())
+        } else if self.prohibit_lookups {
+            warn!("unknown issuer and lookups prohibited");
+            None
         } else {
+            debug!("attempting to look up issuer");
+
             let issuer_name = self
                 .vci_issuers
                 .iter()
                 .find(|issuer| issuer.issuer.iss == iss)
                 .map(|issuer| issuer.issuer.name.as_str())
+                .tap_some(|_| warn!("issuer was in list, but had unknown key id"))
                 .unwrap_or("Unknown Issuer")
                 .to_string();
 
-            Self::load_vci_issuer(
-                &self.client,
-                VciIssuer {
+            Some(
+                self.load_vci_issuer(VciIssuer {
                     iss: iss.to_string(),
                     name: issuer_name,
                     website: None,
                     canonical_iss: None,
-                },
+                })
+                .await?,
             )
-            .await?
         };
 
-        let jwk = issuer
-            .jwk_set
-            .find(&kid)
-            .expect("key id was just found in issuer key set");
+        let Some(issuer) = issuer else {
+            bail!("could not find issuer");
+        };
+        trace!("found issuer data with {} keys", issuer.jwk_set.keys.len());
+
+        let Some(jwk) = issuer.jwk_set.find(&kid) else {
+            bail!("could not find jwk key in issuer");
+        };
+        debug!(key_id = jwk.common.key_id, "found key id");
 
         let key = jsonwebtoken::DecodingKey::from_jwk(jwk)?;
 
@@ -242,26 +362,36 @@ impl ShcDecoder {
             &key,
             jsonwebtoken::Algorithm::ES256,
         )?;
+        debug!(verified, "checked validity of jwt");
 
         let entries: Vec<FhirBundleEntry> = serde_json::from_value(
             main_data["vc"]["credentialSubject"]["fhirBundle"]["entry"].take(),
         )?;
+        debug!(len = entries.len(), "got fhir bundle entries");
 
-        let referenced_cvx_codes = entries
+        let cvx_codes: HashMap<_, _> = entries
             .iter()
             .filter_map(|entry| match &entry.resource {
-                FhirBundleEntryResource::Immunization { vaccine_code, .. } => {
-                    Some(&vaccine_code.coding)
+                FhirBundleEntryResource::Immunization(immunization) => {
+                    Some(&immunization.vaccine_code.coding)
                 }
                 _ => None,
             })
-            .flat_map(|coding| coding.iter().map(|coding| coding.code))
-            .filter_map(|code| self.cvx_codes.get(&code).cloned())
-            .map(|cvx_code| (cvx_code.code, cvx_code));
+            .flatten()
+            .filter_map(|coding| {
+                if coding.system != "http://hl7.org/fhir/sid/cvx" {
+                    return None;
+                }
+
+                self.cvx_codes.get(&coding.code).cloned()
+            })
+            .map(|cvx_code| (cvx_code.code.clone(), cvx_code))
+            .collect();
+        debug!(len = cvx_codes.len(), "found referenced cvx codes");
 
         let data = ShcData {
             verified,
-            cvx_codes: referenced_cvx_codes.collect(),
+            cvx_codes,
             issuer: issuer.issuer,
             entries,
         };
@@ -271,10 +401,11 @@ impl ShcDecoder {
 
     #[instrument(skip_all)]
     async fn load_vci_issuers(
-        client: &reqwest::Client,
+        &self,
         path: &Path,
+        skip_updates: bool,
     ) -> eyre::Result<Vec<VciIssuerMeta>> {
-        if Self::file_is_new_enough(path) {
+        if Self::file_is_new_enough(path, skip_updates) {
             let file = std::fs::File::open(path)?;
             match serde_json::from_reader(file) {
                 Ok(codes) => {
@@ -287,13 +418,24 @@ impl ShcDecoder {
             }
         }
 
-        let issuers: VciIssuers = client.get(Self::VCI_ISSUERS).send().await?.json().await?;
+        if skip_updates {
+            warn!("no cached data and skipping vci issuer updates");
+            return Ok(Default::default());
+        }
+
+        let issuers: VciIssuers = self
+            .client
+            .get(Self::VCI_ISSUERS)
+            .send()
+            .await?
+            .json()
+            .await?;
 
         let futs = futures::stream::iter(
             issuers
                 .participating_issuers
                 .into_iter()
-                .map(|issuer| Self::load_vci_issuer(client, issuer)),
+                .map(|issuer| self.load_vci_issuer(issuer)),
         );
         let issuer_metas: Vec<_> = futs
             .buffer_unordered(4)
@@ -308,21 +450,20 @@ impl ShcDecoder {
     }
 
     #[instrument(skip_all, fields(iss = issuer.iss))]
-    async fn load_vci_issuer(
-        client: &reqwest::Client,
-        issuer: VciIssuer,
-    ) -> eyre::Result<VciIssuerMeta> {
+    async fn load_vci_issuer(&self, issuer: VciIssuer) -> eyre::Result<VciIssuerMeta> {
         debug!("loading issuer");
 
-        let jwk_set = Self::get_jwks(client, &issuer.iss)
+        let jwk_set = self
+            .get_jwks(&issuer.iss)
             .await
             .unwrap_or_else(|_| JwkSet { keys: vec![] });
 
         Ok(VciIssuerMeta { issuer, jwk_set })
     }
 
-    async fn get_jwks(client: &reqwest::Client, iss: &str) -> eyre::Result<JwkSet> {
-        Ok(client
+    async fn get_jwks(&self, iss: &str) -> eyre::Result<JwkSet> {
+        Ok(self
+            .client
             .get(format!("{}/.well-known/jwks.json", iss))
             .send()
             .await?
@@ -332,13 +473,14 @@ impl ShcDecoder {
 
     #[instrument(skip_all)]
     async fn load_cvx_codes(
-        client: &reqwest::Client,
+        &self,
         path: &Path,
-    ) -> eyre::Result<HashMap<u32, CvxCode>> {
+        skip_updates: bool,
+    ) -> eyre::Result<HashMap<SmolStr, Arc<CvxCode>>> {
         static DATE_FORMAT: &[time::format_description::FormatItem<'_>] =
             format_description!("[year]/[month]/[day]");
 
-        if Self::file_is_new_enough(path) {
+        if Self::file_is_new_enough(path, skip_updates) {
             let file = std::fs::File::open(path)?;
             match serde_json::from_reader(file) {
                 Ok(codes) => {
@@ -351,18 +493,29 @@ impl ShcDecoder {
             }
         }
 
-        let data = client.get(Self::CVX_CODES).send().await?.text().await?;
+        if skip_updates {
+            warn!("no cached data and skipping cvx code updates");
+            return Ok(Default::default());
+        }
 
-        let codes: HashMap<u32, CvxCode> = data
+        let data = self
+            .client
+            .get(Self::CVX_CODES)
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        let codes: HashMap<_, _> = data
             .lines()
             .filter_map(|line| {
                 let mut parts = line.split('|');
 
-                let code = parts.next()?.trim().parse().ok()?;
+                let code = SmolStr::new(parts.next()?.trim());
 
                 Some((
-                    code,
-                    CvxCode {
+                    code.clone(),
+                    Arc::new(CvxCode {
                         code,
                         short_description: parts.next()?.to_string(),
                         full_name: parts.next()?.to_string(),
@@ -376,7 +529,7 @@ impl ShcDecoder {
                             }
                         },
                         last_updated: Date::parse(parts.next()?, &DATE_FORMAT).ok()?,
-                    },
+                    }),
                 ))
             })
             .collect();
@@ -388,10 +541,15 @@ impl ShcDecoder {
     }
 
     #[instrument]
-    fn file_is_new_enough(path: &Path) -> bool {
+    fn file_is_new_enough(path: &Path, skip_updates: bool) -> bool {
         if !path.exists() {
             debug!("path did not exist");
             return false;
+        }
+
+        if skip_updates {
+            debug!("skipping updates, ignoring file modification check");
+            return true;
         }
 
         let Ok(metadata) = path.metadata() else {
