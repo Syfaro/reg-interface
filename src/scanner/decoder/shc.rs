@@ -13,7 +13,7 @@ use jsonwebtoken::jwk::JwkSet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use tap::TapOptional;
+use tap::TapFallible;
 use time::{
     format_description::well_known::Rfc3339, macros::format_description, Date, PrimitiveDateTime,
 };
@@ -54,6 +54,7 @@ pub struct ShcDecoder {
 pub struct ShcData {
     pub verified: bool,
     pub issuer: VciIssuer,
+    pub known_issuer: bool,
     pub cvx_codes: HashMap<SmolStr, Arc<CvxCode>>,
     pub entries: Vec<FhirBundleEntry>,
 }
@@ -95,7 +96,7 @@ pub struct FhirBundleEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "resourceType", rename_all_fields = "camelCase")]
+#[serde(tag = "resourceType")]
 pub enum FhirBundleEntryResource {
     Patient(FhirPatient),
     Immunization(FhirImmunization),
@@ -316,34 +317,36 @@ impl ShcDecoder {
 
         let issuer = if let Some(issuer) = issuer {
             debug!("issuer was known");
-            Some(issuer.clone())
+            Some((issuer.clone(), true))
         } else if self.prohibit_lookups {
             warn!("unknown issuer and lookups prohibited");
             None
         } else {
             debug!("attempting to look up issuer");
 
-            let issuer_name = self
+            let existing_issuer = self
                 .vci_issuers
                 .iter()
                 .find(|issuer| issuer.issuer.iss == iss)
-                .map(|issuer| issuer.issuer.name.as_str())
-                .tap_some(|_| warn!("issuer was in list, but had unknown key id"))
-                .unwrap_or("Unknown Issuer")
-                .to_string();
+                .map(|issuer| issuer.issuer.clone());
 
-            Some(
-                self.load_vci_issuer(VciIssuer {
-                    iss: iss.to_string(),
-                    name: issuer_name,
-                    website: None,
-                    canonical_iss: None,
-                })
-                .await?,
-            )
+            let known_issuer = existing_issuer.is_some();
+
+            let issuer = existing_issuer.unwrap_or_else(|| VciIssuer {
+                iss: iss.to_string(),
+                name: iss.to_string(),
+                website: None,
+                canonical_iss: None,
+            });
+
+            self.load_vci_issuer(issuer)
+                .await
+                .tap_err(|err| warn!("could not load issuer: {err}"))
+                .ok()
+                .map(|issuer| (issuer, known_issuer))
         };
 
-        let Some(issuer) = issuer else {
+        let Some((issuer, known_issuer)) = issuer else {
             bail!("could not find issuer");
         };
         trace!("found issuer data with {} keys", issuer.jwk_set.keys.len());
@@ -393,6 +396,7 @@ impl ShcDecoder {
             verified,
             cvx_codes,
             issuer: issuer.issuer,
+            known_issuer,
             entries,
         };
 

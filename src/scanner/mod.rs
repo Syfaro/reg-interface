@@ -106,7 +106,7 @@ async fn decode_inputs(
                         continue;
                     }
                     Err(err) => {
-                        error!("error attempting to decode data: {err}");
+                        error!("error attempting to decode data: {err:?}");
                         continue;
                     }
                 };

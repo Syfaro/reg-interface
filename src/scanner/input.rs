@@ -70,6 +70,12 @@ macro_rules! send_value {
         }
 
         let final_value = std::mem::take(&mut $value);
+        let final_value = final_value
+            .strip_suffix("\n")
+            .unwrap_or(&final_value)
+            .strip_suffix("\r")
+            .unwrap_or(&final_value)
+            .to_string();
 
         if let Err(err) = $tx.send(($input_id, final_value)).await {
             $token.cancel();
