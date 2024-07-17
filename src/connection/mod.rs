@@ -50,11 +50,32 @@ pub struct WebSocketConnectionConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct MqttConnectionConfig {
-    url: String,
+    #[serde(flatten)]
+    params: MqttConnectionParams,
     publish_topic: String,
     action_topic: Option<String>,
     #[serde(default)]
     allow_actions: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum MqttConnectionParams {
+    Url {
+        url: String,
+    },
+    Options {
+        client_id: String,
+        host: String,
+        port: Option<u16>,
+        credentials: Option<MqttCredentials>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MqttCredentials {
+    username: String,
+    password: String,
 }
 
 #[derive(Debug, Deserialize)]

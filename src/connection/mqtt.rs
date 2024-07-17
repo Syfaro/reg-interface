@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use eyre::{bail, OptionExt};
 use tokio::{
     select,
     sync::mpsc::{channel, Sender},
@@ -23,7 +24,48 @@ impl MqttConnection {
         action_tx: Sender<super::ConnectionAction>,
     ) -> eyre::Result<Self> {
         let (tx, mut rx) = channel::<(serde_json::Value, HashMap<String, String>)>(1);
-        let options = rumqttc::MqttOptions::parse_url(config.url)?;
+
+        let options = match config.params {
+            super::MqttConnectionParams::Url { url } => rumqttc::MqttOptions::parse_url(url)?,
+            super::MqttConnectionParams::Options {
+                client_id,
+                host,
+                port,
+                credentials,
+            } => {
+                let mut options = if let Ok(url) = url::Url::parse(&host) {
+                    let (transport, host) = match url.scheme() {
+                        "mqtt" => (
+                            rumqttc::Transport::tcp(),
+                            url.host_str().ok_or_eyre("mqtt url scheme missing host")?,
+                        ),
+                        "mqtts" => (
+                            rumqttc::Transport::tls_with_default_config(),
+                            url.host_str().ok_or_eyre("mqtts url scheme missing host")?,
+                        ),
+                        "ws" => (rumqttc::Transport::ws(), url.as_str()),
+                        "wss" => (rumqttc::Transport::wss_with_default_config(), url.as_str()),
+                        scheme => bail!("unknown scheme: {scheme}"),
+                    };
+
+                    let mut options =
+                        rumqttc::MqttOptions::new(client_id, host, url.port().unwrap_or(1883));
+
+                    options.set_transport(transport);
+
+                    options
+                } else {
+                    rumqttc::MqttOptions::new(client_id, host, port.unwrap_or(1883))
+                };
+
+                if let Some(super::MqttCredentials { username, password }) = credentials {
+                    options.set_credentials(username, password);
+                }
+
+                options
+            }
+        };
+
         let (client, mut event_loop) = rumqttc::AsyncClient::new(options, 1);
 
         if let Some(action_topic) = config.action_topic.as_deref() {
