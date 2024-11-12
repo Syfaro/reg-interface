@@ -1,14 +1,21 @@
+use std::{net::SocketAddr, time::Duration};
+
 use eyre::{bail, Context};
 use futures::TryStreamExt;
 use ipp::prelude::*;
 use serde::{Deserialize, Serialize};
+use tap::TapOptional;
+use tokio::{io::AsyncWriteExt, net::TcpSocket};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, trace};
+
+mod zpl;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "printer_type", rename_all = "lowercase")]
 pub enum PrintConfig {
     Cups(CupsPrintConfig),
+    Zpl(ZplPrintConfig),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,6 +31,11 @@ impl PrintConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ZplPrintConfig {
+    printer_addr: SocketAddr,
+}
+
 pub struct Printer {
     http_client: reqwest::Client,
     connection: PrinterConnection,
@@ -34,6 +46,9 @@ enum PrinterConnection {
         ipp_client: AsyncIppClient,
         printer_uri: Uri,
     },
+    Zpl {
+        printer_addr: SocketAddr,
+    },
 }
 
 impl std::fmt::Debug for PrinterConnection {
@@ -43,6 +58,10 @@ impl std::fmt::Debug for PrinterConnection {
                 .debug_struct("PrinterConnection::Cups")
                 .field("printer_uri", printer_uri)
                 .finish_non_exhaustive(),
+            Self::Zpl { printer_addr } => f
+                .debug_struct("PrinterConnection::Zpl")
+                .field("printer_addr", printer_addr)
+                .finish(),
         }
     }
 }
@@ -52,6 +71,12 @@ impl Printer {
     pub async fn new(config: PrintConfig) -> eyre::Result<Self> {
         match config {
             PrintConfig::Cups(cups) => Self::connect_cups(cups).await,
+            PrintConfig::Zpl(zpl) => Ok(Self {
+                http_client: Default::default(),
+                connection: PrinterConnection::Zpl {
+                    printer_addr: zpl.printer_addr,
+                },
+            }),
         }
     }
 
@@ -88,21 +113,96 @@ impl Printer {
     }
 
     #[instrument(skip(self))]
-    pub async fn print_url(&self, url: &str) -> eyre::Result<()> {
+    pub async fn print_url_and_data(&self, url: String, mut data: String) -> eyre::Result<()> {
         let resp = self.http_client.get(url).send().await?;
-        let stream = resp.bytes_stream().map_err(std::io::Error::other);
-        let reader = tokio_util::io::StreamReader::new(stream);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().map(|s| s.to_string()).ok())
+            .tap_some(|content_type| debug!(content_type, "got url content-type"));
+
+        match &self.connection {
+            PrinterConnection::Cups { .. } => eyre::bail!("cups printers cannot use zpl data"),
+            PrinterConnection::Zpl { printer_addr } => {
+                let Some(content_type) = content_type else {
+                    eyre::bail!("url must include content-type header");
+                };
+
+                let Some(pos) = data.find("^XZ") else {
+                    eyre::bail!("must have end of label to insert data");
+                };
+
+                if content_type.starts_with("image/") {
+                    let im_data = resp.bytes().await?;
+                    let im = image::load_from_memory(&im_data)?;
+                    let field = zpl::image_to_gf(&im);
+
+                    trace!(field, "generated GFA instruction");
+
+                    data.insert_str(pos, &field);
+
+                    Self::write_to_socket(printer_addr.to_owned(), data.as_bytes()).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn print_url(&self, url: String) -> eyre::Result<()> {
+        let resp = self.http_client.get(url).send().await?;
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().map(|s| s.to_string()).ok())
+            .tap_some(|content_type| debug!(content_type, "got url content-type"));
 
         match &self.connection {
             PrinterConnection::Cups {
                 ipp_client,
                 printer_uri,
             } => {
+                let stream = resp.bytes_stream().map_err(std::io::Error::other);
+                let reader = tokio_util::io::StreamReader::new(stream);
+
                 let payload = IppPayload::new_async(reader.compat());
                 let op = IppOperationBuilder::print_job(printer_uri.clone(), payload).build();
                 let resp = ipp_client.send(op).await?;
 
                 info!(status_code = %resp.header().status_code(), "sent print job");
+            }
+            PrinterConnection::Zpl { printer_addr } => {
+                let Some(content_type) = content_type else {
+                    eyre::bail!("url must include content-type header");
+                };
+
+                if content_type.starts_with("image/") {
+                    let data = resp.bytes().await?;
+                    let im = image::load_from_memory(&data)?;
+                    let field = zpl::image_to_gf(&im);
+
+                    trace!(field, "generated GFA instruction");
+
+                    Self::write_to_socket(
+                        printer_addr.to_owned(),
+                        format!("^XA^FO0,0{field}^XZ").as_bytes(),
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn print_data(&self, data: String) -> eyre::Result<()> {
+        match self.connection {
+            PrinterConnection::Cups { .. } => eyre::bail!("cups printers cannot use zpl data"),
+            PrinterConnection::Zpl { printer_addr } => {
+                trace!(?printer_addr, "sending data to printer");
+                Self::write_to_socket(printer_addr, data.as_bytes()).await?;
             }
         }
 
@@ -138,6 +238,25 @@ impl Printer {
 
                 Ok(is_known_printer)
             }
+            PrinterConnection::Zpl { .. } => Ok(true),
         }
+    }
+
+    async fn write_to_socket(addr: SocketAddr, data: &[u8]) -> eyre::Result<()> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let socket = if addr.is_ipv4() {
+                TcpSocket::new_v4()
+            } else {
+                TcpSocket::new_v6()
+            }?;
+            let mut stream = socket.connect(addr).await?;
+
+            stream.write_all(data).await?;
+
+            Ok::<_, eyre::Report>(())
+        })
+        .await??;
+
+        Ok(())
     }
 }

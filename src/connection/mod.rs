@@ -54,6 +54,7 @@ pub struct MqttConnectionConfig {
     params: MqttConnectionParams,
     publish_topic: String,
     action_topic: Option<String>,
+    notify_topic: Option<String>,
     #[serde(default)]
     allow_actions: bool,
 }
@@ -81,7 +82,10 @@ pub struct MqttCredentials {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ConnectionAction {
-    Print { url: String },
+    Print {
+        url: Option<String>,
+        data: Option<String>,
+    },
 }
 
 #[async_trait]
@@ -90,6 +94,7 @@ pub trait Connection: Send + Sync + 'static {
     fn supported_decoder_types(&self) -> &HashSet<crate::scanner::DecoderType>;
 
     async fn send(&self, data: &crate::scanner::ScanResult) -> eyre::Result<()>;
+    async fn send_alert(&self, message: &str) -> eyre::Result<()>;
 }
 
 pub struct ConnectionManager {
@@ -124,6 +129,14 @@ impl ConnectionManager {
                 "sending data to connection target"
             );
             connection.send(&result).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_alert(&self, message: &str) -> eyre::Result<()> {
+        for connection in self.connections.iter() {
+            connection.send_alert(message).await?;
         }
 
         Ok(())
