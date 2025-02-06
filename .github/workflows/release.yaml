@@ -1,0 +1,23 @@
+name: Artifacts
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  clippy_check:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - uses: ncipollo/release-action@v1
+        with:
+          artifacts: "target/release/reg-interface"
