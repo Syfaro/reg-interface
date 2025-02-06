@@ -22,10 +22,7 @@ eyre = "0.6.12"
 flate2 = "1.0.30"
 futures = "0.3.30"
 hex = "0.4.3"
-ipp = { version = "5.2.0", default-features = false, features = [
-    "async",
-    "async-client",
-] }
+ipp = { version = "5.2.0", default-features = false, features = ["async", "async-client", "serde"] }
 jsonwebtoken = "9.3.0"
 open = "5.3.0"
 regex = "1.11.1"

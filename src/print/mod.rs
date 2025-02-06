@@ -10,6 +10,8 @@ pub struct PrintConfig {
     #[serde(default = "PrintConfig::default_cups_host")]
     cups_host: String,
     printer_uri: String,
+    #[serde(default)]
+    attributes: Vec<IppAttribute>,
 }
 
 impl PrintConfig {
@@ -20,6 +22,8 @@ impl PrintConfig {
 
 pub struct Printer {
     ipp_client: AsyncIppClient,
+    ipp_attributes: Vec<IppAttribute>,
+
     http_client: reqwest::Client,
     printer_uri: Uri,
 }
@@ -41,6 +45,7 @@ impl Printer {
 
         let printer = Self {
             ipp_client,
+            ipp_attributes: config.attributes,
             http_client,
             printer_uri,
         };
@@ -63,7 +68,9 @@ impl Printer {
         let reader = tokio_util::io::StreamReader::new(stream);
 
         let payload = IppPayload::new_async(reader.compat());
-        let op = IppOperationBuilder::print_job(self.printer_uri.clone(), payload).build();
+        let op = IppOperationBuilder::print_job(self.printer_uri.clone(), payload)
+            .attributes(self.ipp_attributes.iter().cloned())
+            .build();
         let resp = self.ipp_client.send(op).await?;
 
         info!(status_code = %resp.header().status_code(), "sent print job");
