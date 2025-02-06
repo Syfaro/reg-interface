@@ -10,7 +10,6 @@ allow-branch = ["main"]
 sign-tag = true
 
 [features]
-default = ["pdf"]
 pdf = ["pdfium-render"]
 
 [dependencies]

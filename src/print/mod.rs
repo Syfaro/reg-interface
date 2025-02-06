@@ -3,8 +3,6 @@ use std::{net::SocketAddr, time::Duration};
 use eyre::{bail, Context};
 use futures::TryStreamExt;
 use ipp::prelude::*;
-use itertools::Itertools;
-use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use tap::TapOptional;
 use tokio::{io::AsyncWriteExt, net::TcpSocket};
@@ -205,30 +203,7 @@ impl Printer {
                 } else if content_type == "application/pdf" {
                     let data = resp.bytes().await?;
 
-                    let images: Vec<_> = {
-                        let pdfium = Pdfium::default();
-                        let doc = pdfium.load_pdf_from_byte_slice(&data, None)?;
-
-                        let (width, height) = if config.rotate {
-                            (config.label_height, config.label_width)
-                        } else {
-                            (config.label_width, config.label_height)
-                        };
-
-                        let render_config = PdfRenderConfig::new()
-                            .use_print_quality(true)
-                            .set_target_width(width)
-                            .set_maximum_width(width)
-                            .set_maximum_height(height);
-
-                        doc.pages()
-                            .iter()
-                            .map(|page| {
-                                page.render_with_config(&render_config)
-                                    .map(|page| page.as_image())
-                            })
-                            .try_collect()?
-                    };
+                    let images = Self::render_pdf_to_images(config, &data)?;
 
                     for im in images {
                         let field = zpl::image_to_gf(&im, config.rotate);
@@ -308,5 +283,46 @@ impl Printer {
         .await??;
 
         Ok(())
+    }
+
+    #[cfg(feature = "pdf")]
+    fn render_pdf_to_images(
+        config: &ZplPrintConfig,
+        data: &[u8],
+    ) -> eyre::Result<Vec<image::DynamicImage>> {
+        use itertools::Itertools;
+        use pdfium_render::prelude::*;
+
+        let pdfium = Pdfium::default();
+        let doc = pdfium.load_pdf_from_byte_slice(data, None)?;
+
+        let (width, height) = if config.rotate {
+            (config.label_height, config.label_width)
+        } else {
+            (config.label_width, config.label_height)
+        };
+
+        let render_config = PdfRenderConfig::new()
+            .use_print_quality(true)
+            .set_target_width(width)
+            .set_maximum_width(width)
+            .set_maximum_height(height);
+
+        doc.pages()
+            .iter()
+            .map(|page| {
+                page.render_with_config(&render_config)
+                    .map(|page| page.as_image())
+            })
+            .try_collect()
+            .map_err(eyre::Report::from)
+    }
+
+    #[cfg(not(feature = "pdf"))]
+    fn render_pdf_to_images(
+        _config: &ZplPrintConfig,
+        _data: &[u8],
+    ) -> eyre::Result<Vec<image::DynamicImage>> {
+        eyre::bail!("no pdf support included")
     }
 }
