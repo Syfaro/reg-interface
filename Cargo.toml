@@ -3,6 +3,11 @@ name = "reg-interface"
 version = "0.1.0"
 edition = "2021"
 authors = ["Syfaro <syfaro@huefox.com>"]
+publish = false
+
+[package.metadata.release]
+allow-branch = ["main"]
+sign-tag = true
 
 [dependencies]
 aamva = { git = "https://github.com/Syfaro/aamva-rs", version = "0.1.0" }

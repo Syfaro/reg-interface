@@ -6,7 +6,7 @@ on:
       - "*"
 
 jobs:
-  clippy_check:
+  release:
     runs-on: ubuntu-latest
 
     permissions:
