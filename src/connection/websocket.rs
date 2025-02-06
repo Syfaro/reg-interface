@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use async_tungstenite::tokio::connect_async;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use tokio::{
     select,
     sync::mpsc::{channel, Sender},

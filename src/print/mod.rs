@@ -25,6 +25,8 @@ pub struct CupsPrintConfig {
     #[serde(default = "PrintConfig::default_cups_host")]
     cups_host: String,
     printer_uri: String,
+    #[serde(default)]
+    attributes: Vec<IppAttribute>,
 }
 
 impl PrintConfig {
@@ -49,6 +51,8 @@ pub struct Printer {
 enum PrinterConnection {
     Cups {
         ipp_client: AsyncIppClient,
+        ipp_attributes: Vec<IppAttribute>,
+
         printer_uri: Uri,
     },
     Zpl {
@@ -103,6 +107,7 @@ impl Printer {
             connection: PrinterConnection::Cups {
                 ipp_client,
                 printer_uri,
+                ipp_attributes: cups.attributes,
             },
         };
 
@@ -166,13 +171,16 @@ impl Printer {
         match &self.connection {
             PrinterConnection::Cups {
                 ipp_client,
+                ipp_attributes,
                 printer_uri,
             } => {
                 let stream = resp.bytes_stream().map_err(std::io::Error::other);
                 let reader = tokio_util::io::StreamReader::new(stream);
 
                 let payload = IppPayload::new_async(reader.compat());
-                let op = IppOperationBuilder::print_job(printer_uri.clone(), payload).build();
+                let op = IppOperationBuilder::print_job(printer_uri.clone(), payload)
+                    .attributes(ipp_attributes.iter().cloned())
+                    .build();
                 let resp = ipp_client.send(op).await?;
 
                 info!(status_code = %resp.header().status_code(), "sent print job");
@@ -256,6 +264,7 @@ impl Printer {
             PrinterConnection::Cups {
                 ipp_client,
                 printer_uri,
+                ..
             } => {
                 let op = IppOperationBuilder::cups().get_printers();
                 let resp = ipp_client.send(op).await?;

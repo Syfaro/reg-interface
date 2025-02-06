@@ -11,11 +11,7 @@ pub fn image_to_gf(im: &DynamicImage, rotate: bool) -> String {
     // transparent pixels are set to white so they aren't printed.
     let im = im.to_luma_alpha8();
 
-    let im = if rotate {
-        imageops::rotate90(&im)
-    } else {
-        im
-    };
+    let im = if rotate { imageops::rotate90(&im) } else { im };
 
     let (width, height) = im.dimensions();
     debug!(width, height, "got image dimensions");
@@ -27,16 +23,13 @@ pub fn image_to_gf(im: &DynamicImage, rotate: bool) -> String {
 
     // Create a new image with the padded width, then pull pixels from the
     // original image.
-    let mut cleaned_image =
-        ImageBuffer::<Luma<u8>, _>::from_fn(width_padded, height, |x, y| {
-            let pixel = im
-                .get_pixel_checked(x, y)
-                .unwrap_or(&LumaA([255, 255]));
+    let mut cleaned_image = ImageBuffer::<Luma<u8>, _>::from_fn(width_padded, height, |x, y| {
+        let pixel = im.get_pixel_checked(x, y).unwrap_or(&LumaA([255, 255]));
 
-            // If the pixel is mostly transparent, make it white.
-            let val = if pixel.0[1] > 127 { pixel.0[0] } else { 255 };
-            Luma([val])
-        });
+        // If the pixel is mostly transparent, make it white.
+        let val = if pixel.0[1] > 127 { pixel.0[0] } else { 255 };
+        Luma([val])
+    });
     debug!(width = width_padded, height, "generated image");
 
     // The image crate provides a bilevel dithering helper to try and make
