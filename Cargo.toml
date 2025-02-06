@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Syfaro <syfaro@huefox.com>"]
 
+[features]
+default = ["pdf"]
+pdf = ["pdfium-render"]
+
 [dependencies]
 aamva = { git = "https://github.com/Syfaro/aamva-rs", version = "0.1.0" }
 async-hid = "0.1.0"
@@ -25,6 +29,7 @@ ipp = { version = "5.1.0", default-features = false, features = [
 itertools = "0.13.0"
 jsonwebtoken = "9.3.0"
 open = "5.3.0"
+pdfium-render = { version = "0.8.26", optional = true }
 regex = "1.11.1"
 reqwest = { version = "0.12.9", default-features = false, features = [
     "rustls-tls",

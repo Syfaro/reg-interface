@@ -6,10 +6,16 @@ use tracing::{debug, instrument};
 ///
 /// This also handles the grayscale conversion, including dithering.
 #[instrument(skip(im))]
-pub fn image_to_gf(im: &DynamicImage) -> String {
+pub fn image_to_gf(im: &DynamicImage, rotate: bool) -> String {
     // Convert image to grayscale with alpha channel. We need to make sure that
     // transparent pixels are set to white so they aren't printed.
     let im = im.to_luma_alpha8();
+
+    let im = if rotate {
+        imageops::rotate90(&im)
+    } else {
+        im
+    };
 
     let (width, height) = im.dimensions();
     debug!(width, height, "got image dimensions");
@@ -55,7 +61,7 @@ pub fn image_to_gf(im: &DynamicImage) -> String {
     for y in 0..height {
         buf.clear();
 
-        for x in 0..(width + padding) {
+        for x in 0..width_padded {
             let pos = x % 8;
             let pixel = cleaned_image.get_pixel(x, y).0[0];
 

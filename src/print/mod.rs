@@ -3,6 +3,8 @@ use std::{net::SocketAddr, time::Duration};
 use eyre::{bail, Context};
 use futures::TryStreamExt;
 use ipp::prelude::*;
+use itertools::Itertools;
+use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use tap::TapOptional;
 use tokio::{io::AsyncWriteExt, net::TcpSocket};
@@ -34,6 +36,9 @@ impl PrintConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ZplPrintConfig {
     printer_addr: SocketAddr,
+    rotate: bool,
+    label_width: i32,
+    label_height: i32,
 }
 
 pub struct Printer {
@@ -47,7 +52,7 @@ enum PrinterConnection {
         printer_uri: Uri,
     },
     Zpl {
-        printer_addr: SocketAddr,
+        config: ZplPrintConfig,
     },
 }
 
@@ -58,9 +63,11 @@ impl std::fmt::Debug for PrinterConnection {
                 .debug_struct("PrinterConnection::Cups")
                 .field("printer_uri", printer_uri)
                 .finish_non_exhaustive(),
-            Self::Zpl { printer_addr } => f
+            Self::Zpl { config } => f
                 .debug_struct("PrinterConnection::Zpl")
-                .field("printer_addr", printer_addr)
+                .field("printer_addr", &config.printer_addr)
+                .field("label_width", &config.label_width)
+                .field("label_height", &config.label_height)
                 .finish(),
         }
     }
@@ -73,9 +80,7 @@ impl Printer {
             PrintConfig::Cups(cups) => Self::connect_cups(cups).await,
             PrintConfig::Zpl(zpl) => Ok(Self {
                 http_client: Default::default(),
-                connection: PrinterConnection::Zpl {
-                    printer_addr: zpl.printer_addr,
-                },
+                connection: PrinterConnection::Zpl { config: zpl },
             }),
         }
     }
@@ -123,7 +128,7 @@ impl Printer {
 
         match &self.connection {
             PrinterConnection::Cups { .. } => eyre::bail!("cups printers cannot use zpl data"),
-            PrinterConnection::Zpl { printer_addr } => {
+            PrinterConnection::Zpl { config } => {
                 let Some(content_type) = content_type else {
                     eyre::bail!("url must include content-type header");
                 };
@@ -135,13 +140,13 @@ impl Printer {
                 if content_type.starts_with("image/") {
                     let im_data = resp.bytes().await?;
                     let im = image::load_from_memory(&im_data)?;
-                    let field = zpl::image_to_gf(&im);
+                    let field = zpl::image_to_gf(&im, config.rotate);
 
                     trace!(field, "generated GFA instruction");
 
                     data.insert_str(pos, &field);
 
-                    Self::write_to_socket(printer_addr.to_owned(), data.as_bytes()).await?;
+                    Self::write_to_socket(config.printer_addr.to_owned(), data.as_bytes()).await?;
                 }
             }
         }
@@ -172,7 +177,7 @@ impl Printer {
 
                 info!(status_code = %resp.header().status_code(), "sent print job");
             }
-            PrinterConnection::Zpl { printer_addr } => {
+            PrinterConnection::Zpl { config } => {
                 let Some(content_type) = content_type else {
                     eyre::bail!("url must include content-type header");
                 };
@@ -180,15 +185,51 @@ impl Printer {
                 if content_type.starts_with("image/") {
                     let data = resp.bytes().await?;
                     let im = image::load_from_memory(&data)?;
-                    let field = zpl::image_to_gf(&im);
+                    let field = zpl::image_to_gf(&im, config.rotate);
 
                     trace!(field, "generated GFA instruction");
 
                     Self::write_to_socket(
-                        printer_addr.to_owned(),
+                        config.printer_addr.to_owned(),
                         format!("^XA^FO0,0{field}^XZ").as_bytes(),
                     )
                     .await?;
+                } else if content_type == "application/pdf" {
+                    let data = resp.bytes().await?;
+
+                    let images: Vec<_> = {
+                        let pdfium = Pdfium::default();
+                        let doc = pdfium.load_pdf_from_byte_slice(&data, None)?;
+
+                        let (width, height) = if config.rotate {
+                            (config.label_height, config.label_width)
+                        } else {
+                            (config.label_width, config.label_height)
+                        };
+
+                        let render_config = PdfRenderConfig::new()
+                            .use_print_quality(true)
+                            .set_target_width(width)
+                            .set_maximum_width(width)
+                            .set_maximum_height(height);
+
+                        doc.pages()
+                            .iter()
+                            .map(|page| {
+                                page.render_with_config(&render_config)
+                                    .map(|page| page.as_image())
+                            })
+                            .try_collect()?
+                    };
+
+                    for im in images {
+                        let field = zpl::image_to_gf(&im, config.rotate);
+                        Self::write_to_socket(
+                            config.printer_addr.to_owned(),
+                            format!("^XA^FO0,0{field}^XZ").as_bytes(),
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -198,11 +239,11 @@ impl Printer {
 
     #[instrument(skip(self))]
     pub async fn print_data(&self, data: String) -> eyre::Result<()> {
-        match self.connection {
+        match &self.connection {
             PrinterConnection::Cups { .. } => eyre::bail!("cups printers cannot use zpl data"),
-            PrinterConnection::Zpl { printer_addr } => {
-                trace!(?printer_addr, "sending data to printer");
-                Self::write_to_socket(printer_addr, data.as_bytes()).await?;
+            PrinterConnection::Zpl { config } => {
+                trace!(printer_addr = ?config.printer_addr, "sending data to printer");
+                Self::write_to_socket(config.printer_addr, data.as_bytes()).await?;
             }
         }
 
