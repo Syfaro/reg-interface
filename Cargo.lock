@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "reg-interface"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aamva",
  "async-hid",
