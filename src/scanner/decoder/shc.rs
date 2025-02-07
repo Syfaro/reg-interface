@@ -4,6 +4,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -469,6 +470,7 @@ impl ShcDecoder {
         Ok(self
             .client
             .get(format!("{}/.well-known/jwks.json", iss))
+            .timeout(Duration::from_secs(10))
             .send()
             .await?
             .json()

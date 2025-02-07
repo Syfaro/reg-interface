@@ -12,6 +12,7 @@ use tracing::{error, info, trace, warn};
 pub struct MqttConnection {
     name: String,
     tx: Sender<(serde_json::Value, HashMap<String, String>)>,
+    alert_tx: Sender<String>,
     supported_decoders: HashSet<crate::scanner::DecoderType>,
 }
 
@@ -24,6 +25,7 @@ impl MqttConnection {
         action_tx: Sender<super::ConnectionAction>,
     ) -> eyre::Result<Self> {
         let (tx, mut rx) = channel::<(serde_json::Value, HashMap<String, String>)>(1);
+        let (alert_tx, mut alert_rx) = channel::<String>(1);
 
         let options = match config.params {
             super::MqttConnectionParams::Url { url } => rumqttc::MqttOptions::parse_url(url)?,
@@ -132,6 +134,26 @@ impl MqttConnection {
                             error!("could not send mqtt message: {err}");
                         }
                     }
+
+                    message = alert_rx.recv() => {
+                        let Some(message) = message else {
+                            info!("mqtt alert channel ended, ending task");
+                            break;
+                        };
+
+                        let Some(notify_topic) = &config.notify_topic else {
+                            warn!("no alert topic configured");
+                            continue;
+                        };
+
+                        let json = serde_json::to_string(&serde_json::json!({
+                            "text": message,
+                        })).expect("could not serialize alert");
+
+                        if let Err(err) = client.publish(notify_topic, rumqttc::QoS::AtMostOnce, false, json).await {
+                            error!("could not send mqtt message: {err}");
+                        }
+                    }
                 }
             }
         });
@@ -140,6 +162,7 @@ impl MqttConnection {
             name,
             supported_decoders,
             tx,
+            alert_tx,
         })
     }
 }
@@ -157,6 +180,13 @@ impl super::Connection for MqttConnection {
     async fn send(&self, result: &crate::scanner::ScanResult) -> eyre::Result<()> {
         self.tx
             .send((result.data_to_send()?.into_owned(), result.extras.clone()))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn send_alert(&self, message: &str) -> eyre::Result<()> {
+        self.alert_tx
+            .send(message.to_string())
             .await
             .map_err(Into::into)
     }

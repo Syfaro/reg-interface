@@ -9,40 +9,39 @@ publish = false
 allow-branch = ["main"]
 sign-tag = true
 
+[features]
+pdf = ["pdfium-render"]
+
 [dependencies]
 aamva = { git = "https://github.com/Syfaro/aamva-rs", version = "0.1.0" }
 async-hid = "0.1.0"
-async-trait = "0.1.81"
-async-tungstenite = { version = "0.28.2", features = [
-    "tokio-runtime",
-    "tokio-rustls-webpki-roots",
-] }
+async-trait = "0.1.86"
+async-tungstenite = { version = "0.28.2", features = ["tokio-runtime", "tokio-rustls-webpki-roots"] }
 base64 = "0.22.1"
 eyre = "0.6.12"
-flate2 = "1.0.30"
-futures = "0.3.30"
+flate2 = "1.0.35"
+futures = "0.3.31"
 hex = "0.4.3"
+image = "0.25.5"
 ipp = { version = "5.2.0", default-features = false, features = ["async", "async-client", "serde"] }
-jsonwebtoken = "9.3.0"
-open = "5.3.0"
+itertools = "0.14.0"
+jsonwebtoken = "9.3.1"
+open = "5.3.2"
+pdfium-render = { version = "0.8.26", optional = true }
 regex = "1.11.1"
-reqwest = { version = "0.12.5", default-features = false, features = [
-    "rustls-tls",
-    "json",
-    "stream",
-] }
+reqwest = { version = "0.12.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 rhai = { version = "1.21.0", features = ["serde", "sync"] }
 rumqttc = { version = "0.24.0", features = ["url", "websocket"] }
-serde = { version = "1.0.204", features = ["derive", "rc"] }
-serde_json = "1.0.120"
+serde = { version = "1.0.217", features = ["derive", "rc"] }
+serde_json = "1.0.138"
 serde_with = "3.12.0"
 smol_str = { version = "0.3.2", features = ["serde"] }
 tap = "1.0.1"
-time = { version = "0.3.36", features = ["macros", "parsing", "serde"] }
+time = { version = "0.3.37", features = ["macros", "parsing", "serde"] }
 tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread"] }
-tokio-serial = "5.4.4"
-tokio-util = "0.7.11"
-toml = "0.8.14"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-url = "2.5.2"
+tokio-serial = "5.4.5"
+tokio-util = "0.7.13"
+toml = "0.8.20"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+url = "2.5.4"

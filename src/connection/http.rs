@@ -2,6 +2,7 @@ use std::{collections::HashSet, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use tracing::warn;
 use url::Url;
 
 pub struct HttpConnection {
@@ -64,6 +65,11 @@ impl super::Connection for HttpConnection {
             .send()
             .await?;
 
+        Ok(())
+    }
+
+    async fn send_alert(&self, message: &str) -> eyre::Result<()> {
+        warn!("alert: {message}");
         Ok(())
     }
 }

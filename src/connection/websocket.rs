@@ -105,4 +105,9 @@ impl super::Connection for WebSocketConnection {
             .await
             .map_err(Into::into)
     }
+
+    async fn send_alert(&self, message: &str) -> eyre::Result<()> {
+        warn!("alert: {message}");
+        Ok(())
+    }
 }

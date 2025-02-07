@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use eyre::Context;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc::channel};
@@ -71,12 +73,15 @@ async fn main() -> eyre::Result<()> {
 
     let connection_manager = if let Some(connection) = config.connection {
         info!("connections enabled");
-        Some(connection::start_connections(connection, token.child_token(), connection_tx).await?)
+        Arc::new(Some(
+            connection::start_connections(connection, token.child_token(), connection_tx).await?,
+        ))
     } else {
-        None
+        Arc::new(None)
     };
 
     let token_clone = token.clone();
+    let connection_manager_clone = connection_manager.clone();
     tokio::spawn(async move {
         loop {
             select! {
@@ -94,6 +99,11 @@ async fn main() -> eyre::Result<()> {
                     debug!(?action, "got action");
 
                     if let Err(err) = process_action(printer.as_ref(), action).await {
+                        if let Some(connection_manager) = &*connection_manager_clone {
+                            if let Err(err) = connection_manager.send_alert(err.to_string().as_ref()).await {
+                                error!("failed to send alert: {err}");
+                            }
+                        }
                         error!("could not process action: {err}");
                     }
                 }
@@ -114,7 +124,7 @@ async fn main() -> eyre::Result<()> {
                     break;
                 };
 
-                process_data(connection_manager.as_ref(), data).await?;
+                process_data((*connection_manager).as_ref(), data).await?;
             }
         }
     }
@@ -127,13 +137,18 @@ async fn process_action(
     action: connection::ConnectionAction,
 ) -> eyre::Result<()> {
     match action {
-        connection::ConnectionAction::Print { url } => {
+        connection::ConnectionAction::Print { url, data } => {
             let Some(printer) = printer else {
                 warn!("got print command but no printer configured");
                 return Ok(());
             };
 
-            printer.print_url(&url).await?;
+            match (url, data) {
+                (Some(url), Some(data)) => printer.print_url_and_data(url, data).await?,
+                (Some(url), None) => printer.print_url(url).await?,
+                (None, Some(data)) => printer.print_data(data).await?,
+                (None, None) => warn!("got print command with no url or data"),
+            }
         }
     }
 
