@@ -15,9 +15,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - run: rustup target add x86_64-unknown-linux-musl
       - run: rustup toolchain install stable --profile minimal
+      - run: |
+          sudo apt-get update -y
+          sudo apt-get install musl-tools -y
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - run: |
+          mkdir artifacts
+          mv target/x86_64-unknown-linux-musl/release/reg-interface artifacts/reg-interface-x86_64-unknown-linux-musl
       - uses: ncipollo/release-action@v1
         with:
-          artifacts: "target/release/reg-interface"
+          artifacts: "artifacts/*"
