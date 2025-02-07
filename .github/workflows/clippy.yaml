@@ -10,7 +10,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal
+      - run: rustup toolchain install stable
+      - run: rustup target add x86_64-unknown-linux-musl
       - run: rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy
+      - run: |
+          sudo apt-get update -y
+          sudo apt-get install musl-tools -y
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reg-interface-x86_64-unknown-linux-musl
+          path: target/release/reg-interface
