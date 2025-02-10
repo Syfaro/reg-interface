@@ -63,7 +63,7 @@ impl Printer {
 
     #[instrument(skip(self))]
     pub async fn print_url(&self, url: &str) -> eyre::Result<()> {
-        let resp = self.http_client.get(url).send().await?;
+        let resp = self.http_client.get(url).send().await?.error_for_status()?;
         let stream = resp.bytes_stream().map_err(std::io::Error::other);
         let reader = tokio_util::io::StreamReader::new(stream);
 
