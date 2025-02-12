@@ -18,11 +18,14 @@ async-tungstenite = { version = "0.28.2", features = [
     "tokio-rustls-webpki-roots",
 ] }
 base64 = "0.22.1"
+btleplug = "0.11.7"
 eyre = "0.6.12"
 flate2 = "1.0.30"
 futures = "0.3.30"
 hex = "0.4.3"
+hex-literal = "0.4.1"
 ipp = { version = "5.2.0", default-features = false, features = ["async", "async-client", "serde"] }
+isomdl = { git = "https://github.com/spruceid/isomdl.git", version = "0.1.0" }
 jsonwebtoken = "9.3.0"
 open = "5.3.0"
 regex = "1.11.1"
@@ -46,3 +49,4 @@ toml = "0.8.14"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url = "2.5.2"
+uuid = "1.13.1"

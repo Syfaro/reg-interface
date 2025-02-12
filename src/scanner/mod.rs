@@ -26,6 +26,7 @@ pub struct ScannerConfig {
 #[serde(rename_all = "snake_case", tag = "data_type")]
 pub enum ScannedData {
     Aamva(Box<aamva::DecodedData>),
+    Mdl(Box<isomdl::presentation::authentication::ResponseAuthenticationOutcome>),
     Shc(Box<decoder::ShcData>),
     Url { url: String },
     Generic { data: String },
@@ -35,6 +36,7 @@ impl ScannedData {
     pub fn decoder_type(&self) -> decoder::DecoderType {
         match self {
             Self::Aamva(_) => decoder::DecoderType::Aamva,
+            Self::Mdl(_) => decoder::DecoderType::Mdl,
             Self::Shc(_) => decoder::DecoderType::Shc,
             Self::Url { .. } => decoder::DecoderType::Url,
             Self::Generic { .. } => decoder::DecoderType::Generic,

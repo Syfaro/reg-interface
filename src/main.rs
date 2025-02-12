@@ -5,6 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use connection::ConnectionAction;
+
 mod connection;
 mod print;
 mod scanner;
@@ -124,10 +126,10 @@ async fn main() -> eyre::Result<()> {
 
 async fn process_action(
     printer: Option<&print::Printer>,
-    action: connection::ConnectionAction,
+    action: ConnectionAction,
 ) -> eyre::Result<()> {
     match action {
-        connection::ConnectionAction::Print { url } => {
+        ConnectionAction::Print { url } => {
             let Some(printer) = printer else {
                 warn!("got print command but no printer configured");
                 return Ok(());

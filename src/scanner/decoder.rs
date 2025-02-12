@@ -13,19 +13,24 @@ use crate::scanner::ScannedData;
 
 use super::ScanResult;
 
+mod mdl;
 mod shc;
 
 pub use shc::ShcData;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct DecoderConfig {
+    #[serde(default)]
     shc: shc::ShcConfig,
+    #[serde(default)]
+    mdl: mdl::MdlConfig,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecoderType {
     Aamva,
+    Mdl,
     Shc,
     Url,
     Generic,
@@ -35,6 +40,7 @@ impl std::fmt::Display for DecoderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aamva => write!(f, "AAMVA"),
+            Self::Mdl => write!(f, "mDL"),
             Self::Shc => write!(f, "SHC"),
             Self::Url => write!(f, "URL"),
             Self::Generic => write!(f, "Generic"),
@@ -46,6 +52,7 @@ impl DecoderType {
     pub fn all() -> HashSet<Self> {
         [
             DecoderType::Aamva,
+            DecoderType::Mdl,
             DecoderType::Shc,
             DecoderType::Url,
             DecoderType::Generic,
@@ -62,6 +69,7 @@ pub struct Decoder {
     connection_targets: Vec<Option<Arc<HashSet<String>>>>,
 
     shc_decoder: shc::ShcDecoder,
+    mdl_decoder: mdl::MdlDecoder,
 }
 
 impl Decoder {
@@ -107,6 +115,7 @@ impl Decoder {
             .collect();
 
         let shc_decoder = shc::ShcDecoder::new(decoder_config.shc).await?;
+        let mdl_decoder = mdl::MdlDecoder::new(decoder_config.mdl).await?;
 
         Ok(Self {
             input_decoders,
@@ -114,6 +123,7 @@ impl Decoder {
             transformers,
             connection_targets,
             shc_decoder,
+            mdl_decoder,
         })
     }
 
@@ -219,6 +229,17 @@ impl Decoder {
                 .tap_err(|err| warn!("expected shc data could not be decoded: {err}"))
             {
                 return Some(ScannedData::Shc(Box::new(data)));
+            }
+        }
+
+        if data.starts_with("mdoc:") && decoder_types.contains(&DecoderType::Mdl) {
+            if let Ok(data) = self
+                .mdl_decoder
+                .decode(&data)
+                .await
+                .tap_err(|err| warn!("expected mdl could not be decoded: {err}"))
+            {
+                return Some(ScannedData::Mdl(Box::new(data)));
             }
         }
 
