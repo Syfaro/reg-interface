@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use axum::Router;
+use axum::{routing, Router};
 use eyre::Context;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc::channel};
@@ -53,7 +53,7 @@ async fn main() -> eyre::Result<()> {
 
     let token = CancellationToken::new();
 
-    let mut app = Router::<()>::new();
+    let mut app = Router::<()>::new().route("/health", routing::get(|| async move { "OK" }));
 
     let printer = if let Some(print) = config.print {
         info!("print enabled");
