@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use axum::Router;
 use rhai::{Engine, Scope, AST};
 use serde::{Deserialize, Serialize};
 use tap::{TapFallible, TapOptional};
@@ -13,19 +14,24 @@ use crate::scanner::ScannedData;
 
 use super::ScanResult;
 
+mod mdl;
 mod shc;
 
 pub use shc::ShcData;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct DecoderConfig {
+    #[serde(default)]
     shc: shc::ShcConfig,
+    #[serde(default)]
+    mdl: mdl::MdlConfig,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecoderType {
     Aamva,
+    Mdl,
     Shc,
     Url,
     Generic,
@@ -35,6 +41,7 @@ impl std::fmt::Display for DecoderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aamva => write!(f, "AAMVA"),
+            Self::Mdl => write!(f, "mDL"),
             Self::Shc => write!(f, "SHC"),
             Self::Url => write!(f, "URL"),
             Self::Generic => write!(f, "Generic"),
@@ -46,6 +53,7 @@ impl DecoderType {
     pub fn all() -> HashSet<Self> {
         [
             DecoderType::Aamva,
+            DecoderType::Mdl,
             DecoderType::Shc,
             DecoderType::Url,
             DecoderType::Generic,
@@ -61,15 +69,16 @@ pub struct Decoder {
     transformers: Vec<Option<Mutex<(Engine, AST)>>>,
     connection_targets: Vec<Option<Arc<HashSet<String>>>>,
 
-    shc_decoder: shc::ShcDecoder,
+    shc_decoder: Option<shc::ShcDecoder>,
+    mdl_decoder: Option<mdl::MdlDecoder>,
 }
 
 impl Decoder {
     pub async fn new(
         scanner_config: &super::ScannerConfig,
         decoder_config: DecoderConfig,
-    ) -> eyre::Result<Self> {
-        let input_decoders = scanner_config
+    ) -> eyre::Result<(Self, Router<()>)> {
+        let input_decoders: Vec<_> = scanner_config
             .inputs
             .iter()
             .map(|input| input.decoders.clone())
@@ -106,15 +115,32 @@ impl Decoder {
             .map(|input| input.connection_targets.clone())
             .collect();
 
-        let shc_decoder = shc::ShcDecoder::new(decoder_config.shc).await?;
+        let input_decoder_types: HashSet<_> = input_decoders.iter().flatten().collect();
 
-        Ok(Self {
-            input_decoders,
-            open_urls,
-            transformers,
-            connection_targets,
-            shc_decoder,
-        })
+        let shc_decoder = if input_decoder_types.contains(&DecoderType::Shc) {
+            Some(shc::ShcDecoder::new(decoder_config.shc).await?)
+        } else {
+            None
+        };
+
+        let (mdl_decoder, mdl_router) = if input_decoder_types.contains(&DecoderType::Mdl) {
+            let (mdl_decoder, mdl_router) = mdl::MdlDecoder::new(decoder_config.mdl).await?;
+            (Some(mdl_decoder), mdl_router)
+        } else {
+            (None, Router::new())
+        };
+
+        Ok((
+            Self {
+                input_decoders,
+                open_urls,
+                transformers,
+                connection_targets,
+                shc_decoder,
+                mdl_decoder,
+            },
+            mdl_router,
+        ))
     }
 
     pub async fn decode(
@@ -214,11 +240,26 @@ impl Decoder {
         if data.starts_with("shc:/") && decoder_types.contains(&DecoderType::Shc) {
             if let Ok(data) = self
                 .shc_decoder
+                .as_ref()
+                .expect("shc decoder must exist if shc type present")
                 .decode(&data)
                 .await
                 .tap_err(|err| warn!("expected shc data could not be decoded: {err}"))
             {
                 return Some(ScannedData::Shc(Box::new(data)));
+            }
+        }
+
+        if data.starts_with("mdoc:") && decoder_types.contains(&DecoderType::Mdl) {
+            if let Ok(data) = self
+                .mdl_decoder
+                .as_ref()
+                .expect("mdl decoder must exist if mdl type present")
+                .decode(&data)
+                .await
+                .tap_err(|err| warn!("expected mdl could not be decoded: {err}"))
+            {
+                return Some(ScannedData::Mdl(Box::new(data)));
             }
         }
 

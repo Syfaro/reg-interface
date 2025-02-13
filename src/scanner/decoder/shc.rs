@@ -4,6 +4,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -232,7 +233,9 @@ impl ShcDecoder {
     const MAX_AGE_SECS: u64 = 60 * 60 * 24 * 7;
 
     pub async fn new(config: ShcConfig) -> eyre::Result<Self> {
-        let client = reqwest::Client::default();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()?;
 
         if !config.cache_dir.exists() {
             tokio::fs::create_dir_all(&config.cache_dir).await?;
@@ -460,6 +463,7 @@ impl ShcDecoder {
         let jwk_set = self
             .get_jwks(&issuer.iss)
             .await
+            .tap_err(|err| warn!("could not load issuer: {err}"))
             .unwrap_or_else(|_| JwkSet { keys: vec![] });
 
         Ok(VciIssuerMeta { issuer, jwk_set })

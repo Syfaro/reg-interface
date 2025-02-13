@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use axum::Router;
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -26,6 +27,7 @@ pub struct ScannerConfig {
 #[serde(rename_all = "snake_case", tag = "data_type")]
 pub enum ScannedData {
     Aamva(Box<aamva::DecodedData>),
+    Mdl(Box<isomdl::presentation::authentication::ResponseAuthenticationOutcome>),
     Shc(Box<decoder::ShcData>),
     Url { url: String },
     Generic { data: String },
@@ -35,6 +37,7 @@ impl ScannedData {
     pub fn decoder_type(&self) -> decoder::DecoderType {
         match self {
             Self::Aamva(_) => decoder::DecoderType::Aamva,
+            Self::Mdl(_) => decoder::DecoderType::Mdl,
             Self::Shc(_) => decoder::DecoderType::Shc,
             Self::Url { .. } => decoder::DecoderType::Url,
             Self::Generic { .. } => decoder::DecoderType::Generic,
@@ -68,15 +71,15 @@ pub async fn setup_scanners(
     decoder_config: DecoderConfig,
     token: CancellationToken,
     scanned_data_tx: Sender<ScanResult>,
-) -> eyre::Result<()> {
+) -> eyre::Result<Router<()>> {
     let (tx, rx) = channel(1);
 
-    let decoder = decoder::Decoder::new(&scanner_config, decoder_config).await?;
+    let (decoder, router) = decoder::Decoder::new(&scanner_config, decoder_config).await?;
 
     input::connect_scanner_inputs(scanner_config.inputs, token.clone(), tx).await?;
     tokio::spawn(decode_inputs(decoder, token, rx, scanned_data_tx).in_current_span());
 
-    Ok(())
+    Ok(router)
 }
 
 async fn decode_inputs(

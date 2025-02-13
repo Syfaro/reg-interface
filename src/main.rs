@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+
+use axum::{routing, Router};
 use eyre::Context;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc::channel};
@@ -5,12 +8,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use connection::ConnectionAction;
+
 mod connection;
 mod print;
 mod scanner;
 
 #[derive(Debug, Deserialize)]
 struct Config {
+    server_addr: SocketAddr,
     print: Option<print::PrintConfig>,
     decoder: Option<scanner::DecoderConfig>,
     scanner: Option<scanner::ScannerConfig>,
@@ -47,6 +53,8 @@ async fn main() -> eyre::Result<()> {
 
     let token = CancellationToken::new();
 
+    let mut app = Router::<()>::new().route("/health", routing::get(|| async move { "OK" }));
+
     let printer = if let Some(print) = config.print {
         info!("print enabled");
         Some(print::Printer::new(print).await?)
@@ -58,13 +66,14 @@ async fn main() -> eyre::Result<()> {
 
     if let Some(scanner) = config.scanner {
         info!("scanner enabled");
-        scanner::setup_scanners(
+        let router = scanner::setup_scanners(
             scanner,
             config.decoder.unwrap_or_default(),
             token.child_token(),
             scanner_tx,
         )
         .await?;
+        app = app.merge(router);
     }
 
     let (connection_tx, mut connection_rx) = channel(1);
@@ -75,6 +84,17 @@ async fn main() -> eyre::Result<()> {
     } else {
         None
     };
+
+    let listener = tokio::net::TcpListener::bind(&config.server_addr).await?;
+    let token_clone = token.clone();
+    tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app)
+            .with_graceful_shutdown(token_clone.cancelled_owned())
+            .await
+        {
+            error!("serve error: {err}")
+        }
+    });
 
     let token_clone = token.clone();
     tokio::spawn(async move {
@@ -88,6 +108,7 @@ async fn main() -> eyre::Result<()> {
                 action = connection_rx.recv() => {
                     let Some(action) = action else {
                         warn!("action channel closed, ending action task");
+                        token_clone.cancel();
                         break;
                     };
 
@@ -124,10 +145,10 @@ async fn main() -> eyre::Result<()> {
 
 async fn process_action(
     printer: Option<&print::Printer>,
-    action: connection::ConnectionAction,
+    action: ConnectionAction,
 ) -> eyre::Result<()> {
     match action {
-        connection::ConnectionAction::Print { url } => {
+        ConnectionAction::Print { url } => {
             let Some(printer) = printer else {
                 warn!("got print command but no printer configured");
                 return Ok(());
