@@ -15,12 +15,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt install libdbus-1-dev pkg-config
       - run: rustup target add x86_64-unknown-linux-musl
       - run: rustup toolchain install stable --profile minimal
       - run: |
           sudo apt-get update -y
-          sudo apt-get install musl-tools -y
+          sudo apt-get install musl-tools libdbus-1-dev pkg-config -y
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target x86_64-unknown-linux-musl
       - run: |

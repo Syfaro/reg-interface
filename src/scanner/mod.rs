@@ -71,7 +71,7 @@ pub async fn setup_scanners(
     decoder_config: DecoderConfig,
     token: CancellationToken,
     scanned_data_tx: Sender<ScanResult>,
-) -> eyre::Result<Router::<()>> {
+) -> eyre::Result<Router<()>> {
     let (tx, rx) = channel(1);
 
     let (decoder, router) = decoder::Decoder::new(&scanner_config, decoder_config).await?;

@@ -69,8 +69,8 @@ pub struct Decoder {
     transformers: Vec<Option<Mutex<(Engine, AST)>>>,
     connection_targets: Vec<Option<Arc<HashSet<String>>>>,
 
-    shc_decoder: shc::ShcDecoder,
-    mdl_decoder: mdl::MdlDecoder,
+    shc_decoder: Option<shc::ShcDecoder>,
+    mdl_decoder: Option<mdl::MdlDecoder>,
 }
 
 impl Decoder {
@@ -78,7 +78,7 @@ impl Decoder {
         scanner_config: &super::ScannerConfig,
         decoder_config: DecoderConfig,
     ) -> eyre::Result<(Self, Router<()>)> {
-        let input_decoders = scanner_config
+        let input_decoders: Vec<_> = scanner_config
             .inputs
             .iter()
             .map(|input| input.decoders.clone())
@@ -115,8 +115,20 @@ impl Decoder {
             .map(|input| input.connection_targets.clone())
             .collect();
 
-        let shc_decoder = shc::ShcDecoder::new(decoder_config.shc).await?;
-        let (mdl_decoder, mdl_router) = mdl::MdlDecoder::new(decoder_config.mdl).await?;
+        let input_decoder_types: HashSet<_> = input_decoders.iter().flatten().collect();
+
+        let shc_decoder = if input_decoder_types.contains(&DecoderType::Shc) {
+            Some(shc::ShcDecoder::new(decoder_config.shc).await?)
+        } else {
+            None
+        };
+
+        let (mdl_decoder, mdl_router) = if input_decoder_types.contains(&DecoderType::Mdl) {
+            let (mdl_decoder, mdl_router) = mdl::MdlDecoder::new(decoder_config.mdl).await?;
+            (Some(mdl_decoder), mdl_router)
+        } else {
+            (None, Router::new())
+        };
 
         Ok((
             Self {
@@ -228,6 +240,8 @@ impl Decoder {
         if data.starts_with("shc:/") && decoder_types.contains(&DecoderType::Shc) {
             if let Ok(data) = self
                 .shc_decoder
+                .as_ref()
+                .expect("shc decoder must exist if shc type present")
                 .decode(&data)
                 .await
                 .tap_err(|err| warn!("expected shc data could not be decoded: {err}"))
@@ -239,6 +253,8 @@ impl Decoder {
         if data.starts_with("mdoc:") && decoder_types.contains(&DecoderType::Mdl) {
             if let Ok(data) = self
                 .mdl_decoder
+                .as_ref()
+                .expect("mdl decoder must exist if mdl type present")
                 .decode(&data)
                 .await
                 .tap_err(|err| warn!("expected mdl could not be decoded: {err}"))
