@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+
+use axum::Router;
 use eyre::Context;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc::channel};
@@ -13,6 +16,7 @@ mod scanner;
 
 #[derive(Debug, Deserialize)]
 struct Config {
+    server_addr: SocketAddr,
     print: Option<print::PrintConfig>,
     decoder: Option<scanner::DecoderConfig>,
     scanner: Option<scanner::ScannerConfig>,
@@ -49,6 +53,8 @@ async fn main() -> eyre::Result<()> {
 
     let token = CancellationToken::new();
 
+    let mut app = Router::<()>::new();
+
     let printer = if let Some(print) = config.print {
         info!("print enabled");
         Some(print::Printer::new(print).await?)
@@ -60,13 +66,14 @@ async fn main() -> eyre::Result<()> {
 
     if let Some(scanner) = config.scanner {
         info!("scanner enabled");
-        scanner::setup_scanners(
+        let router = scanner::setup_scanners(
             scanner,
             config.decoder.unwrap_or_default(),
             token.child_token(),
             scanner_tx,
         )
         .await?;
+        app = app.merge(router);
     }
 
     let (connection_tx, mut connection_rx) = channel(1);
@@ -77,6 +84,17 @@ async fn main() -> eyre::Result<()> {
     } else {
         None
     };
+
+    let listener = tokio::net::TcpListener::bind(&config.server_addr).await?;
+    let token_clone = token.clone();
+    tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app)
+            .with_graceful_shutdown(token_clone.cancelled_owned())
+            .await
+        {
+            error!("serve error: {err}")
+        }
+    });
 
     let token_clone = token.clone();
     tokio::spawn(async move {
@@ -90,6 +108,7 @@ async fn main() -> eyre::Result<()> {
                 action = connection_rx.recv() => {
                     let Some(action) = action else {
                         warn!("action channel closed, ending action task");
+                        token_clone.cancel();
                         break;
                     };
 

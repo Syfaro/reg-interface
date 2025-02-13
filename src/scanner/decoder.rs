@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use axum::Router;
 use rhai::{Engine, Scope, AST};
 use serde::{Deserialize, Serialize};
 use tap::{TapFallible, TapOptional};
@@ -76,7 +77,7 @@ impl Decoder {
     pub async fn new(
         scanner_config: &super::ScannerConfig,
         decoder_config: DecoderConfig,
-    ) -> eyre::Result<Self> {
+    ) -> eyre::Result<(Self, Router<()>)> {
         let input_decoders = scanner_config
             .inputs
             .iter()
@@ -115,16 +116,19 @@ impl Decoder {
             .collect();
 
         let shc_decoder = shc::ShcDecoder::new(decoder_config.shc).await?;
-        let mdl_decoder = mdl::MdlDecoder::new(decoder_config.mdl).await?;
+        let (mdl_decoder, mdl_router) = mdl::MdlDecoder::new(decoder_config.mdl).await?;
 
-        Ok(Self {
-            input_decoders,
-            open_urls,
-            transformers,
-            connection_targets,
-            shc_decoder,
-            mdl_decoder,
-        })
+        Ok((
+            Self {
+                input_decoders,
+                open_urls,
+                transformers,
+                connection_targets,
+                shc_decoder,
+                mdl_decoder,
+            },
+            mdl_router,
+        ))
     }
 
     pub async fn decode(

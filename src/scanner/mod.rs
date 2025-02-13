@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use axum::Router;
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -70,15 +71,15 @@ pub async fn setup_scanners(
     decoder_config: DecoderConfig,
     token: CancellationToken,
     scanned_data_tx: Sender<ScanResult>,
-) -> eyre::Result<()> {
+) -> eyre::Result<Router::<()>> {
     let (tx, rx) = channel(1);
 
-    let decoder = decoder::Decoder::new(&scanner_config, decoder_config).await?;
+    let (decoder, router) = decoder::Decoder::new(&scanner_config, decoder_config).await?;
 
     input::connect_scanner_inputs(scanner_config.inputs, token.clone(), tx).await?;
     tokio::spawn(decode_inputs(decoder, token, rx, scanned_data_tx).in_current_span());
 
-    Ok(())
+    Ok(router)
 }
 
 async fn decode_inputs(

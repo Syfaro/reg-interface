@@ -101,6 +101,7 @@ macro_rules! interval_input {
                 }
                 _ = $token.cancelled() => {
                     info!("token cancelled, ending input task");
+                    break;
                 }
                 res = $fut => {
                     let data = res?;
