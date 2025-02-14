@@ -340,9 +340,6 @@ impl MdlDecoder {
 
         let mut validated = reader_sm.handle_response(&response);
 
-        let f = std::fs::File::create("id.json")?;
-        serde_json::to_writer_pretty(f, &validated)?;
-
         if let Some(serde_json::Value::Array(portrait)) = validated
             .response
             .get_mut("org.iso.18013.5.1")
