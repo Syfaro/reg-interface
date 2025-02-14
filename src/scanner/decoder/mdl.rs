@@ -37,31 +37,12 @@ static SERVER2CLIENT_ID: Uuid = Uuid::from_bytes(hex!("00000003 A123 48CE 896B 4
 /// Maximum length of data to read from a peripheral before aborting.
 const MAX_PAYLOAD_SIZE: usize = 512 * 1000;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Default, Debug, Deserialize, Serialize)]
 pub struct MdlConfig {
-    timeout: u64,
-    request_attributes: HashMap<String, Vec<String>>,
-    certificates: PathBuf,
-}
-
-impl Default for MdlConfig {
-    fn default() -> Self {
-        Self {
-            timeout: 60,
-            request_attributes: vec![(
-                "org.iso.18013.5.1".into(),
-                vec![
-                    "portrait".to_string(),
-                    "given_name".to_string(),
-                    "family_name".to_string(),
-                    "birth_date".to_string(),
-                ],
-            )]
-            .into_iter()
-            .collect(),
-            certificates: PathBuf::new(),
-        }
-    }
+    timeout: Option<u64>,
+    request_attributes: Option<HashMap<String, Vec<String>>>,
+    certificates: Option<PathBuf>,
+    adapter: Option<String>,
 }
 
 type Portraits = Arc<Mutex<HashMap<String, Vec<u8>>>>;
@@ -93,7 +74,10 @@ async fn serve_portrait(
 
 impl MdlDecoder {
     pub async fn new(config: MdlConfig) -> eyre::Result<(Self, Router<()>)> {
-        let mut namespaces = config.request_attributes.into_iter();
+        let mut namespaces = config
+            .request_attributes
+            .unwrap_or_else(|| Self::default_elements())
+            .into_iter();
 
         let Some((first_namespace, first_namespace_elements)) = namespaces.next() else {
             eyre::bail!("must be at least one namespace");
@@ -108,7 +92,12 @@ impl MdlDecoder {
         }
 
         let mut certs = Vec::new();
-        let mut entries = tokio::fs::read_dir(config.certificates).await?;
+        let mut entries = tokio::fs::read_dir(
+            config
+                .certificates
+                .unwrap_or_else(|| PathBuf::from("certificates")),
+        )
+        .await?;
         while let Ok(Some(file)) = entries.next_entry().await {
             if file.path().extension() != Some(OsStr::new("pem")) {
                 continue;
@@ -127,11 +116,26 @@ impl MdlDecoder {
             .map_err(|err| eyre::eyre!(Box::new(err)))?;
 
         let manager = Manager::new().await?;
-        let adapters = manager.adapters().await?;
-        let central = adapters
-            .into_iter()
-            .next()
-            .ok_or_eyre("no bluetooth adapters were found")?;
+        let mut adapters = manager.adapters().await?;
+
+        let central = if let Some(name) = config.adapter {
+            debug!(name, "looking for adapter");
+            let mut found_adapter = None;
+
+            for adapter in adapters {
+                let found_name = adapter.adapter_info().await?;
+                trace!(found_name, "found adatper");
+
+                if found_name == name {
+                    found_adapter = Some(adapter);
+                }
+            }
+
+            found_adapter.ok_or_else(|| eyre::eyre!("could not find bluetooth adapter: {name}"))?
+        } else {
+            debug!("attempting to find first adapter");
+            adapters.pop().ok_or_eyre("no bluetooth adapters found")?
+        };
 
         let portraits: Portraits = Default::default();
 
@@ -141,7 +145,7 @@ impl MdlDecoder {
 
         Ok((
             Self {
-                timeout: config.timeout,
+                timeout: config.timeout.unwrap_or(60),
                 central,
                 trust_anchors,
                 requested_elements,
@@ -149,6 +153,20 @@ impl MdlDecoder {
             },
             router,
         ))
+    }
+
+    fn default_elements() -> HashMap<String, Vec<String>> {
+        vec![(
+            "org.iso.18013.5.1".into(),
+            vec![
+                "portrait".to_string(),
+                "given_name".to_string(),
+                "family_name".to_string(),
+                "birth_date".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect()
     }
 
     fn convert_elements(attributes: Vec<String>) -> eyre::Result<DataElements> {
