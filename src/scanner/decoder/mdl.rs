@@ -76,7 +76,7 @@ impl MdlDecoder {
     pub async fn new(config: MdlConfig) -> eyre::Result<(Self, Router<()>)> {
         let mut namespaces = config
             .request_attributes
-            .unwrap_or_else(|| Self::default_elements())
+            .unwrap_or_else(Self::default_elements)
             .into_iter();
 
         let Some((first_namespace, first_namespace_elements)) = namespaces.next() else {
