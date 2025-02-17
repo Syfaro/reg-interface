@@ -7,7 +7,6 @@ use btleplug::{
 };
 use eyre::OptionExt;
 use futures::StreamExt;
-use hex_literal::hex;
 use image::DynamicImage;
 use isomdl::{
     definitions::{
@@ -28,11 +27,11 @@ use sha2::{Digest, Sha256};
 use tap::TapFallible;
 use tokio::{io::AsyncReadExt, sync::Mutex};
 use tracing::{debug, instrument, trace, warn};
-use uuid::Uuid;
+use uuid::{uuid, Uuid};
 
-static STATE_ID: Uuid = Uuid::from_bytes(hex!("00000001 A123 48CE 896B 4C76973373E6"));
-static CLIENT2SERVER_ID: Uuid = Uuid::from_bytes(hex!("00000002 A123 48CE 896B 4C76973373E6"));
-static SERVER2CLIENT_ID: Uuid = Uuid::from_bytes(hex!("00000003 A123 48CE 896B 4C76973373E6"));
+const STATE_ID: Uuid = uuid!("00000001-A123-48CE-896B-4C76973373E6");
+const CLIENT2SERVER_ID: Uuid = uuid!("00000002-A123-48CE-896B-4C76973373E6");
+const SERVER2CLIENT_ID: Uuid = uuid!("00000003-A123-48CE-896B-4C76973373E6");
 
 /// Maximum length of data to read from a peripheral before aborting.
 const MAX_PAYLOAD_SIZE: usize = 512 * 1000;
@@ -128,6 +127,7 @@ impl MdlDecoder {
 
                 if found_name == name {
                     found_adapter = Some(adapter);
+                    break;
                 }
             }
 
@@ -347,6 +347,9 @@ impl MdlDecoder {
                 break;
             }
         }
+
+        drop(notifs);
+        trace!("ended peripheral notifications");
 
         peripheral
             .write(state, &[0x00], btleplug::api::WriteType::WithoutResponse)
