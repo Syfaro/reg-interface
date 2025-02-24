@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt install libdbus-1-dev pkg-config
+      - run: sudo apt install libdbus-1-dev libnfc-dev pkg-config
       - run: rustup toolchain install stable --profile minimal
       - run: rustup component add clippy
       - uses: Swatinem/rust-cache@v2
