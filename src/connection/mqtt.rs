@@ -1,163 +1,173 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
-use eyre::{bail, OptionExt};
-use tokio::{
-    select,
-    sync::mpsc::{channel, Sender},
-};
+use eyre::OptionExt;
+use rand::Rng;
+use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
+
+use crate::{
+    RunningTasks,
+    action::ConnectionAction,
+    connection::{Connection, ConnectionTypeMqttConfig},
+};
 
 pub struct MqttConnection {
-    name: String,
-    tx: Sender<(serde_json::Value, HashMap<String, String>)>,
-    supported_decoders: HashSet<crate::scanner::DecoderType>,
+    topic: String,
+    value_tx: mpsc::Sender<(String, Vec<u8>)>,
 }
 
 impl MqttConnection {
     pub async fn new(
         name: String,
-        supported_decoders: HashSet<crate::scanner::DecoderType>,
-        config: super::MqttConnectionConfig,
+        config: ConnectionTypeMqttConfig,
         token: CancellationToken,
-        action_tx: Sender<super::ConnectionAction>,
+        action_tx: mpsc::Sender<ConnectionAction>,
+        tasks: &mut RunningTasks,
     ) -> eyre::Result<Self> {
-        let (tx, mut rx) = channel::<(serde_json::Value, HashMap<String, String>)>(1);
+        let (value_tx, value_rx) = mpsc::channel(1);
 
-        let options = match config.params {
-            super::MqttConnectionParams::Url { url } => rumqttc::MqttOptions::parse_url(url)?,
-            super::MqttConnectionParams::Options {
-                client_id,
-                host,
-                port,
-                credentials,
-            } => {
-                let mut options = if let Ok(url) = url::Url::parse(&host) {
-                    let (transport, host) = match url.scheme() {
-                        "mqtt" => (
-                            rumqttc::Transport::tcp(),
-                            url.host_str().ok_or_eyre("mqtt url scheme missing host")?,
-                        ),
-                        "mqtts" => (
-                            rumqttc::Transport::tls_with_default_config(),
-                            url.host_str().ok_or_eyre("mqtts url scheme missing host")?,
-                        ),
-                        "ws" => (rumqttc::Transport::ws(), url.as_str()),
-                        "wss" => (rumqttc::Transport::wss_with_default_config(), url.as_str()),
-                        scheme => bail!("unknown scheme: {scheme}"),
-                    };
-
-                    let mut options =
-                        rumqttc::MqttOptions::new(client_id, host, url.port().unwrap_or(1883));
-
-                    options.set_transport(transport);
-
-                    options
-                } else {
-                    rumqttc::MqttOptions::new(client_id, host, port.unwrap_or(1883))
-                };
-
-                if let Some(super::MqttCredentials { username, password }) = credentials {
-                    options.set_credentials(username, password);
-                }
-
-                options
-            }
+        let (transport, host) = match config.url.scheme() {
+            "mqtt" => (
+                Transport::tcp(),
+                config.url.host_str().ok_or_eyre("mqtt url missing host")?,
+            ),
+            "mqtts" => (
+                Transport::tls_with_default_config(),
+                config.url.host_str().ok_or_eyre("mqtts url missing host")?,
+            ),
+            "ws" => (Transport::ws(), config.url.as_str()),
+            "wss" => (Transport::wss_with_default_config(), config.url.as_str()),
+            scheme => eyre::bail!("unknown mqtt scheme: {scheme}"),
         };
 
-        let (client, mut event_loop) = rumqttc::AsyncClient::new(options, 1);
+        let client_id = config.client_id.clone().unwrap_or_else(|| {
+            rand::rng()
+                .sample_iter(rand::distr::Alphanumeric)
+                .take(12)
+                .map(char::from)
+                .collect()
+        });
 
-        if let Some(action_topic) = config.action_topic.as_deref() {
-            if config.allow_actions {
-                client
-                    .subscribe(action_topic, rumqttc::QoS::AtMostOnce)
-                    .await?;
+        let mut opts = MqttOptions::new(
+            client_id,
+            host,
+            config.url.port_or_known_default().unwrap_or(1883),
+        );
+        opts.set_transport(transport);
+
+        if let Some(password) = config.url.password() {
+            opts.set_credentials(config.url.username(), password);
+        }
+
+        let (client, events) = AsyncClient::new(opts, 1);
+
+        let task = tokio::spawn(Self::connection_loop(
+            config.clone(),
+            token,
+            client.clone(),
+            value_rx,
+            action_tx,
+            events,
+        ));
+        tasks.push((name, task));
+
+        if config.allow_actions {
+            for topic in config.action_topic {
+                trace!(topic, "subscribing to topic");
+                client.subscribe(topic, QoS::AtLeastOnce).await?;
             }
         }
 
-        tokio::spawn(async move {
-            loop {
-                select! {
-                    _ = token.cancelled() => {
-                        info!("mqtt cancelled, ending task");
+        Ok(Self {
+            topic: config.publish_topic,
+            value_tx,
+        })
+    }
+
+    async fn connection_loop(
+        config: ConnectionTypeMqttConfig,
+        token: CancellationToken,
+        client: AsyncClient,
+        mut value_rx: mpsc::Receiver<(String, Vec<u8>)>,
+        action_tx: mpsc::Sender<ConnectionAction>,
+        mut events: EventLoop,
+    ) -> eyre::Result<()> {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    break;
+                }
+
+                data = value_rx.recv() => {
+                    let Some((topic, payload)) = data else {
                         break;
-                    }
+                    };
+                    trace!(topic, "sending data to mqtt");
+                    client.publish(topic, QoS::AtLeastOnce, false, payload).await?;
+                }
 
-                    notification = event_loop.poll() => {
-                        match notification {
-                            Ok(event) => {
-                                trace!(?event, "got event");
+                notif = events.poll() => {
+                    match notif {
+                        Ok(Event::Incoming(Incoming::Publish(publish))) => {
+                            if !config.allow_actions {
+                                warn!("got action, but actions are not allowed");
+                                continue;
+                            }
 
-                                if let rumqttc::Event::Incoming(rumqttc::Incoming::Publish(publish)) = event {
-                                    if Some(publish.topic.as_str()) == config.action_topic.as_deref() {
-                                        let action: super::ConnectionAction = match serde_json::from_slice(&publish.payload) {
-                                            Ok(action) => action,
-                                            Err(err) => {
-                                                warn!("could not decode action: {err}");
-                                                continue;
-                                            }
-                                        };
-
-                                        if !config.allow_actions {
-                                            warn!("got action, but actions are not allowed");
-                                            continue;
-                                        }
-
-                                        if let Err(err) = action_tx.send(action).await {
-                                            error!("could not send action: {err}");
-                                        }
+                            let action: ConnectionAction = if let Some(prefix) = &config.action_topic_prefix {
+                                if let Some(stripped_topic) = publish.topic.strip_prefix(prefix) {
+                                    if let Some(action) = ConnectionAction::from_name(stripped_topic, &publish.payload).transpose()? {
+                                        action
+                                    } else {
+                                        warn!(topic = publish.topic, "could not determine action from topic");
+                                        continue;
                                     }
+                                } else {
+                                    warn!(topic = publish.topic, "topic did not have expected prefix");
+                                    continue;
                                 }
-                            }
-                            Err(err) => {
-                                error!("mqtt event loop failed, ending task: {err}");
-                                break;
-                            }
+                            } else {
+                                serde_json::from_slice(&publish.payload)?
+                            };
+
+                            debug!("got action: {action:?}");
+                            action_tx.send(action).await?;
                         }
-                    }
-
-                    data = rx.recv() => {
-                        let Some((data, extras)) = data else {
-                            info!("mqtt data channel ended, ending task");
+                        Ok(event) => {
+                            trace!("got other mqtt event: {event:?}");
+                        }
+                        Err(err) => {
+                            error!("mqtt event loop failed: {err}");
                             break;
-                        };
-
-                        let topic = extras.get("mqtt_topic").unwrap_or(&config.publish_topic);
-
-                        trace!(topic, "sending data to mqtt");
-
-                        let json = serde_json::to_string(&data).expect("could not serialize data");
-                        if let Err(err) = client.publish(topic, rumqttc::QoS::AtMostOnce, false, json).await {
-                            error!("could not send mqtt message: {err}");
                         }
                     }
                 }
             }
-        });
+        }
 
-        Ok(Self {
-            name,
-            supported_decoders,
-            tx,
-        })
+        Ok(())
     }
 }
 
 #[async_trait]
-impl super::Connection for MqttConnection {
-    fn name(&self) -> &str {
-        &self.name
-    }
+impl Connection for MqttConnection {
+    async fn send(
+        &self,
+        data: &serde_json::Value,
+        changes: &HashMap<String, serde_json::Value>,
+    ) -> eyre::Result<()> {
+        let topic = changes
+            .get("mqtt_topic")
+            .and_then(|topic| topic.as_str())
+            .unwrap_or(&self.topic)
+            .to_string();
+        let payload = serde_json::to_vec(&data)?;
 
-    fn supported_decoder_types(&self) -> &HashSet<crate::scanner::DecoderType> {
-        &self.supported_decoders
-    }
+        self.value_tx.send((topic, payload)).await?;
 
-    async fn send(&self, result: &crate::scanner::ScanResult) -> eyre::Result<()> {
-        self.tx
-            .send((result.data_to_send()?.into_owned(), result.extras.clone()))
-            .await
-            .map_err(Into::into)
+        Ok(())
     }
 }

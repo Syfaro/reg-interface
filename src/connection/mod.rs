@@ -2,170 +2,160 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::sync::mpsc::Sender;
+use serde_with::{DisplayFromStr, OneOrMany, serde_as};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, trace};
+use url::Url;
+
+use crate::{action::ConnectionAction, RunningTasks};
 
 mod http;
 mod mqtt;
-mod websocket;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ConnectionConfig {
-    targets: Vec<ConnectionTargetConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ConnectionTargetConfig {
-    name: String,
-    #[serde(default = "crate::scanner::DecoderType::all")]
-    supported_decoders: HashSet<crate::scanner::DecoderType>,
+    pub name: String,
+    pub input_names: Option<HashSet<String>>,
     #[serde(flatten)]
-    connection_type: ConnectionType,
+    pub connection_type: ConnectionTypeConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "connection_type", rename_all = "lowercase")]
-pub enum ConnectionType {
-    Http(HttpConnectionConfig),
-    WebSocket(WebSocketConnectionConfig),
-    Mqtt(MqttConnectionConfig),
+pub enum ConnectionTypeConfig {
+    Http(ConnectionTypeHttpConfig),
+    Mqtt(ConnectionTypeMqttConfig),
 }
 
-#[derive(Debug, Deserialize)]
-pub struct HttpConnectionConfig {
-    url: String,
-    timeout: Option<u64>,
-    user_agent: Option<String>,
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionTypeHttpConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub url: Url,
+    pub timeout: Option<u64>,
     #[serde(default)]
-    headers: HashMap<String, String>,
+    pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct WebSocketConnectionConfig {
-    url: String,
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionTypeMqttConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub url: Url,
+    pub client_id: Option<String>,
+    pub publish_topic: String,
     #[serde(default)]
-    allow_actions: bool,
+    pub allow_actions: bool,
+    #[serde_as(as = "OneOrMany<_>")]
+    pub action_topic: Vec<String>,
+    pub action_topic_prefix: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct MqttConnectionConfig {
-    #[serde(flatten)]
-    params: MqttConnectionParams,
-    publish_topic: String,
-    action_topic: Option<String>,
-    #[serde(default)]
-    allow_actions: bool,
-}
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum MqttConnectionParams {
-    Url {
-        url: String,
-    },
-    Options {
-        client_id: String,
-        host: String,
-        port: Option<u16>,
-        credentials: Option<MqttCredentials>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MqttCredentials {
-    username: String,
-    password: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum ConnectionAction {
-    Print { url: String },
-}
 
 #[async_trait]
-pub trait Connection: Send + Sync + 'static {
-    fn name(&self) -> &str;
-    fn supported_decoder_types(&self) -> &HashSet<crate::scanner::DecoderType>;
-
-    async fn send(&self, data: &crate::scanner::ScanResult) -> eyre::Result<()>;
+pub trait Connection {
+    async fn send(
+        &self,
+        data: &serde_json::Value,
+        changes: &HashMap<String, serde_json::Value>,
+    ) -> eyre::Result<()>;
 }
 
 pub struct ConnectionManager {
-    connections: Vec<Box<dyn Connection>>,
+    connections: Vec<ConnectionMetadata>,
+}
+
+struct ConnectionMetadata {
+    name: String,
+    input_names: Option<HashSet<String>>,
+    connection: Box<dyn Connection + Send + Sync>,
 }
 
 impl ConnectionManager {
-    #[instrument(skip(self, result))]
-    pub async fn send(&self, result: crate::scanner::ScanResult) -> eyre::Result<()> {
-        let decoder_type = result.data.decoder_type();
+    pub async fn new(
+        token: CancellationToken,
+        tasks: &mut RunningTasks,
+        action_tx: mpsc::Sender<ConnectionAction>,
+        config: Vec<ConnectionConfig>,
+    ) -> eyre::Result<Self> {
+        let mut connections = Vec::with_capacity(config.len());
 
-        for connection in self.connections.iter() {
-            if !connection.supported_decoder_types().contains(&decoder_type) {
-                trace!(
-                    name = connection.name(),
-                    "connection target did not support decoder type"
-                );
+        for target in config {
+            let connection = Self::create_connection(
+                token.clone(),
+                action_tx.clone(),
+                tasks,
+                target.name.clone(),
+                target.connection_type,
+            )
+            .await?;
+
+            connections.push(ConnectionMetadata {
+                name: target.name,
+                input_names: target.input_names,
+                connection,
+            });
+        }
+
+        Ok(Self { connections })
+    }
+
+    pub async fn send(
+        &self,
+        input_name: &str,
+        data: &serde_json::Value,
+        changes: &HashMap<String, serde_json::Value>,
+    ) -> eyre::Result<()> {
+        let targets: Option<HashSet<&str>> = changes
+            .get("targets")
+            .and_then(|targets| targets.as_array())
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|target| target.as_str())
+                    .collect()
+            });
+
+        for conn_meta in self.connections.iter() {
+            if matches!(targets, Some(ref targets) if !targets.contains(conn_meta.name.as_str())) {
+                trace!("specified targets did not include connection");
                 continue;
             }
 
-            if matches!(result.connection_targets.as_ref(), Some(targets) if !targets.contains(connection.name()))
+            if matches!(conn_meta.input_names, Some(ref input_names) if targets.is_none() && !input_names.contains(input_name))
             {
-                trace!(
-                    name = connection.name(),
-                    "result did not want connection target"
-                );
+                trace!("default targets did not include connection");
                 continue;
             }
 
-            debug!(
-                name = connection.name(),
-                "sending data to connection target"
-            );
-            connection.send(&result).await?;
+            conn_meta.connection.send(data, changes).await?;
         }
 
         Ok(())
     }
-}
 
-pub async fn start_connections(
-    config: ConnectionConfig,
-    token: CancellationToken,
-    tx: Sender<ConnectionAction>,
-) -> eyre::Result<ConnectionManager> {
-    let mut connections: Vec<Box<dyn Connection>> = Vec::with_capacity(config.targets.len());
-
-    for target in config.targets {
-        let connection = match target.connection_type {
-            ConnectionType::Http(config) => Box::new(
-                http::HttpConnection::new(target.name, target.supported_decoders, config).await?,
-            ) as Box<dyn Connection>,
-            ConnectionType::WebSocket(config) => Box::new(
-                websocket::WebSocketConnection::new(
-                    target.name,
-                    target.supported_decoders,
-                    config,
-                    token.clone(),
-                    tx.clone(),
-                )
-                .await?,
-            ),
-            ConnectionType::Mqtt(config) => Box::new(
-                mqtt::MqttConnection::new(
-                    target.name,
-                    target.supported_decoders,
-                    config,
-                    token.clone(),
-                    tx.clone(),
-                )
-                .await?,
-            ),
+    async fn create_connection(
+        token: CancellationToken,
+        action_tx: mpsc::Sender<ConnectionAction>,
+        tasks: &mut RunningTasks,
+        name: String,
+        config: ConnectionTypeConfig,
+    ) -> eyre::Result<Box<dyn Connection + Send + Sync>> {
+        let connection = match config {
+            ConnectionTypeConfig::Http(http) => {
+                debug!(name, "creating http connection");
+                Box::new(http::HttpConnection::new(name, http).await?)
+                    as Box<dyn Connection + Send + Sync>
+            }
+            ConnectionTypeConfig::Mqtt(mqtt) => {
+                debug!(name, "creating mqtt connection");
+                Box::new(mqtt::MqttConnection::new(name, mqtt, token, action_tx, tasks).await?)
+                    as Box<dyn Connection + Send + Sync>
+            }
         };
 
-        connections.push(connection);
+        Ok(connection)
     }
-
-    Ok(ConnectionManager { connections })
 }

@@ -1,27 +1,30 @@
-use std::net::SocketAddr;
+use std::sync::Arc;
 
-use axum::{routing, Router};
 use eyre::Context;
 use serde::Deserialize;
-use tokio::{select, sync::mpsc::channel};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use connection::ConnectionAction;
-
+mod action;
 mod connection;
-mod print;
-mod scanner;
+mod decoder;
+mod input;
+mod transform;
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    server_addr: SocketAddr,
-    print: Option<print::PrintConfig>,
-    decoder: Option<scanner::DecoderConfig>,
-    scanner: Option<scanner::ScannerConfig>,
-    connection: Option<connection::ConnectionConfig>,
+#[derive(Clone, Debug, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub decoder: decoder::DecoderConfig,
+    pub transform: transform::TransformConfig,
+    #[serde(default)]
+    pub action: action::ActionConfig,
+    pub input: Vec<input::InputConfig>,
+    pub connection: Vec<connection::ConnectionConfig>,
 }
+
+type RunningTasks = Vec<(String, JoinHandle<eyre::Result<()>>)>;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -47,129 +50,126 @@ async fn main() -> eyre::Result<()> {
         })?;
     let config: Config = toml::from_str(&config_contents).wrap_err("failed to decode config")?;
 
-    trace!("loaded config: {config:#?}");
-
-    info!("starting");
-
     let token = CancellationToken::new();
+    let mut tasks = Vec::new();
 
-    let mut app = Router::<()>::new().route("/health", routing::get(|| async move { "OK" }));
+    let (qr_tx, qr_rx) = mpsc::channel(1);
+    let (action_tx, action_rx) = mpsc::channel(1);
 
-    let printer = if let Some(print) = config.print {
-        info!("print enabled");
-        Some(print::Printer::new(print).await?)
-    } else {
-        None
-    };
+    let decoders = Arc::new(decoder::DecoderManager::new(config.decoder.clone(), qr_tx).await?);
+    let transform_manager = transform::TransformManager::new(config.transform.clone()).await?;
 
-    let (scanner_tx, mut scanner_rx) = channel(1);
+    action::start(config.action.clone(), token.clone(), action_rx, &mut tasks).await?;
 
-    if let Some(scanner) = config.scanner {
-        info!("scanner enabled");
-        let router = scanner::setup_scanners(
-            scanner,
-            config.decoder.unwrap_or_default(),
-            token.child_token(),
-            scanner_tx,
-        )
-        .await?;
-        app = app.merge(router);
-    }
+    let connection_manager = connection::ConnectionManager::new(
+        token.clone(),
+        &mut tasks,
+        action_tx,
+        config.connection.clone(),
+    )
+    .await?;
 
-    let (connection_tx, mut connection_rx) = channel(1);
+    let input_stream =
+        input::create_stream(config, token.clone(), &mut tasks, decoders.clone(), qr_rx).await?;
+    tasks.push((
+        "input-stream".to_string(),
+        tokio::spawn(process_input_stream(
+            decoders,
+            transform_manager,
+            connection_manager,
+            input_stream,
+        )),
+    ));
 
-    let connection_manager = if let Some(connection) = config.connection {
-        info!("connections enabled");
-        Some(connection::start_connections(connection, token.child_token(), connection_tx).await?)
-    } else {
-        None
-    };
-
-    let listener = tokio::net::TcpListener::bind(&config.server_addr).await?;
+    let ctrl_c = tokio::signal::ctrl_c();
     let token_clone = token.clone();
-    tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, app)
-            .with_graceful_shutdown(token_clone.cancelled_owned())
-            .await
-        {
-            error!("serve error: {err}")
-        }
-    });
-
-    let token_clone = token.clone();
-    tokio::spawn(async move {
-        loop {
-            select! {
-                _ = token_clone.cancelled() => {
-                    info!("main task cancelled, ending action task");
-                    break;
+    tasks.push((
+        "signal-exit".to_string(),
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = ctrl_c => {
+                    info!("got exit signal, ending");
+                    token_clone.cancel();
                 }
 
-                action = connection_rx.recv() => {
-                    let Some(action) = action else {
-                        warn!("action channel closed, ending action task");
-                        token_clone.cancel();
-                        break;
-                    };
+                _ = token_clone.cancelled() => {}
+            }
 
-                    debug!(?action, "got action");
+            Ok(())
+        }),
+    ));
 
-                    if let Err(err) = process_action(printer.as_ref(), action).await {
-                        error!("could not process action: {err}");
-                    }
-                }
+    wait_for_tasks(token, tasks).await
+}
+
+async fn wait_for_tasks(token: CancellationToken, tasks: RunningTasks) -> eyre::Result<()> {
+    let (task_names, task_futs): (Vec<_>, Vec<_>) = tasks.into_iter().unzip();
+    let (task_res, task_idx, task_futs) = futures::future::select_all(task_futs).await;
+
+    let mut exit_res = Ok(());
+
+    match task_res {
+        Ok(Ok(_)) => {
+            if !token.is_cancelled() {
+                warn!(name = task_names[task_idx], "task unexpectedly ended");
+                token.cancel();
             }
         }
-    });
-
-    loop {
-        select! {
-            _ = token.cancelled() => {
-                info!("main task cancelled, ending main task");
-                break;
-            }
-
-            data = scanner_rx.recv() => {
-                let Some(data) = data else {
-                    error!("scanner channel closed, ending main task");
-                    break;
-                };
-
-                process_data(connection_manager.as_ref(), data).await?;
-            }
+        Ok(Err(err)) => {
+            error!(name = task_names[task_idx], "task returned error: {err}");
+            exit_res = Err(err);
+            token.cancel();
+        }
+        Err(err) => {
+            error!(
+                name = task_names[task_idx],
+                "task join returned error: {err}"
+            );
+            exit_res = Err(err.into());
+            token.cancel();
         }
     }
 
-    Ok(())
-}
-
-async fn process_action(
-    printer: Option<&print::Printer>,
-    action: ConnectionAction,
-) -> eyre::Result<()> {
-    match action {
-        ConnectionAction::Print { url } => {
-            let Some(printer) = printer else {
-                warn!("got print command but no printer configured");
-                return Ok(());
-            };
-
-            printer.print_url(&url).await?;
+    for task_fut in task_futs {
+        match task_fut.await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(err)) => warn!("error cancelling task: {err}"),
+            Err(err) => warn!("error joining task: {err}"),
         }
     }
 
-    Ok(())
+    exit_res
 }
 
-#[instrument(err, skip_all, fields(input_id = result.input_id))]
-async fn process_data(
-    connection_manager: Option<&connection::ConnectionManager>,
-    result: scanner::ScanResult,
+async fn process_input_stream(
+    decoders: Arc<decoder::DecoderManager>,
+    transform_manager: transform::TransformManager,
+    connection_manager: connection::ConnectionManager,
+    mut rx: mpsc::Receiver<(Option<String>, decoder::DecodedDataContext)>,
 ) -> eyre::Result<()> {
-    trace!("got result: {result:?}");
+    while let Some((original_data, data_context)) = rx.recv().await {
+        debug!("got data: {data_context:?}");
 
-    if let Some(connection_manager) = connection_manager {
-        connection_manager.send(result).await?;
+        let (transformed_data, changes) = transform_manager.transform(&data_context)?;
+
+        let transformed_data = if let Some(transformed_data) = transformed_data {
+            decoders
+                .post_transform(
+                    data_context.decoder_type,
+                    original_data.as_deref(),
+                    transformed_data,
+                    &changes,
+                )
+                .await?
+        } else {
+            serde_json::to_value(data_context.data)?
+        };
+
+        debug!("got transformed data: {transformed_data:?}, {changes:?}");
+
+        connection_manager
+            .send(&data_context.input_name, &transformed_data, &changes)
+            .await?;
     }
 
     Ok(())

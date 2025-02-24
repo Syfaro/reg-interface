@@ -1,3 +1,5 @@
 /target
-/shc-cache
+mdl-certificates
+shc-cache
 config.toml
+*.rhai

@@ -4,51 +4,35 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use eyre::{bail, OptionExt};
+use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use eyre::{OptionExt, bail};
 use futures::StreamExt;
 use jsonwebtoken::jwk::JwkSet;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use tap::TapFallible;
 use time::{
-    format_description::well_known::Rfc3339, macros::format_description, Date, PrimitiveDateTime,
+    Date, PrimitiveDateTime, format_description::well_known::Rfc3339, macros::format_description,
 };
 use tracing::{debug, instrument, trace, warn};
 
-#[derive(Debug, Deserialize, Serialize)]
+use super::{Decoder, DecoderOutcome, DecoderType};
+
+#[derive(Clone, Default, Debug, Deserialize)]
 pub struct ShcConfig {
-    #[serde(default)]
-    skip_updates: bool,
-    #[serde(default)]
-    prohibit_lookups: bool,
-    #[serde(default = "default_cache_dir")]
-    cache_dir: PathBuf,
-}
-
-impl Default for ShcConfig {
-    fn default() -> Self {
-        Self {
-            prohibit_lookups: false,
-            skip_updates: false,
-            cache_dir: default_cache_dir(),
-        }
-    }
-}
-
-fn default_cache_dir() -> PathBuf {
-    PathBuf::from("shc-cache")
+    pub skip_updates: bool,
+    pub prohibit_lookups: bool,
+    pub cache_dir: Option<PathBuf>,
 }
 
 pub struct ShcDecoder {
     prohibit_lookups: bool,
     client: reqwest::Client,
     vci_issuers: Vec<VciIssuerMeta>,
-    cvx_codes: HashMap<SmolStr, Arc<CvxCode>>,
+    cvx_codes: HashMap<String, Arc<CvxCode>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -56,7 +40,7 @@ pub struct ShcData {
     pub verified: bool,
     pub issuer: VciIssuer,
     pub known_issuer: bool,
-    pub cvx_codes: HashMap<SmolStr, Arc<CvxCode>>,
+    pub cvx_codes: HashMap<String, Arc<CvxCode>>,
     pub entries: Vec<FhirBundleEntry>,
 }
 
@@ -81,7 +65,7 @@ struct VciIssuerMeta {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CvxCode {
-    pub code: SmolStr,
+    pub code: String,
     pub short_description: String,
     pub full_name: String,
     pub notes: String,
@@ -220,7 +204,7 @@ pub struct VaccineCode {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Coding {
-    pub code: SmolStr,
+    pub code: String,
     pub system: String,
 }
 
@@ -233,12 +217,14 @@ impl ShcDecoder {
     const MAX_AGE_SECS: u64 = 60 * 60 * 24 * 7;
 
     pub async fn new(config: ShcConfig) -> eyre::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()?;
+        let client = reqwest::Client::default();
 
-        if !config.cache_dir.exists() {
-            tokio::fs::create_dir_all(&config.cache_dir).await?;
+        let cache_dir = config
+            .cache_dir
+            .unwrap_or_else(|| PathBuf::from("shc-cache"));
+
+        if !cache_dir.exists() {
+            tokio::fs::create_dir_all(&cache_dir).await?;
         }
 
         let mut shc_decoder = Self {
@@ -249,27 +235,187 @@ impl ShcDecoder {
         };
 
         shc_decoder.vci_issuers = shc_decoder
-            .load_vci_issuers(
-                config.cache_dir.join("vci.json").as_path(),
-                config.skip_updates,
-            )
+            .load_vci_issuers(cache_dir.join("vci.json").as_path(), config.skip_updates)
             .await?;
         shc_decoder.cvx_codes = shc_decoder
-            .load_cvx_codes(
-                config.cache_dir.join("cvx.json").as_path(),
-                config.skip_updates,
-            )
+            .load_cvx_codes(cache_dir.join("cvx.json").as_path(), config.skip_updates)
             .await?;
 
         Ok(shc_decoder)
     }
 
-    #[instrument(skip_all, fields(iss))]
-    pub async fn decode(&self, data: &str) -> eyre::Result<ShcData> {
-        let data = data
-            .trim()
-            .strip_prefix("shc:/")
-            .ok_or_eyre("missing shc prefix")?;
+    #[instrument(skip_all)]
+    async fn load_vci_issuers(
+        &self,
+        path: &Path,
+        skip_updates: bool,
+    ) -> eyre::Result<Vec<VciIssuerMeta>> {
+        if Self::file_is_new_enough(path, skip_updates) {
+            let file = std::fs::File::open(path)?;
+            match serde_json::from_reader(file) {
+                Ok(codes) => {
+                    debug!("loaded vci issuers from file");
+                    return Ok(codes);
+                }
+                Err(err) => {
+                    warn!("existing file could not be decoded: {err}");
+                }
+            }
+        }
+
+        if skip_updates {
+            warn!("no cached data and skipping vci issuer updates");
+            return Ok(Default::default());
+        }
+
+        let issuers: VciIssuers = self
+            .client
+            .get(Self::VCI_ISSUERS)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let futs = futures::stream::iter(
+            issuers
+                .participating_issuers
+                .into_iter()
+                .map(|issuer| self.load_vci_issuer(issuer)),
+        );
+        let issuer_metas: Vec<_> = futs
+            .buffer_unordered(4)
+            .filter_map(|res| futures::future::ready(res.ok()))
+            .collect()
+            .await;
+
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, &issuer_metas)?;
+
+        Ok(issuer_metas)
+    }
+
+    #[instrument(skip_all, fields(iss = issuer.iss))]
+    async fn load_vci_issuer(&self, issuer: VciIssuer) -> eyre::Result<VciIssuerMeta> {
+        debug!("loading issuer");
+
+        let jwk_set = self
+            .get_jwks(&issuer.iss)
+            .await
+            .unwrap_or_else(|_| JwkSet { keys: vec![] });
+
+        Ok(VciIssuerMeta { issuer, jwk_set })
+    }
+
+    async fn get_jwks(&self, iss: &str) -> eyre::Result<JwkSet> {
+        Ok(self
+            .client
+            .get(format!("{}/.well-known/jwks.json", iss))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    #[instrument(skip_all)]
+    async fn load_cvx_codes(
+        &self,
+        path: &Path,
+        skip_updates: bool,
+    ) -> eyre::Result<HashMap<String, Arc<CvxCode>>> {
+        static DATE_FORMAT: &[time::format_description::FormatItem<'_>] =
+            format_description!("[year]/[month]/[day]");
+
+        if Self::file_is_new_enough(path, skip_updates) {
+            let file = std::fs::File::open(path)?;
+            match serde_json::from_reader(file) {
+                Ok(codes) => {
+                    debug!("loaded cvx codes from file");
+                    return Ok(codes);
+                }
+                Err(err) => {
+                    warn!("existing file could not be decoded: {err}");
+                }
+            }
+        }
+
+        if skip_updates {
+            warn!("no cached data and skipping cvx code updates");
+            return Ok(Default::default());
+        }
+
+        let data = self
+            .client
+            .get(Self::CVX_CODES)
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        let codes: HashMap<_, _> = data
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split('|');
+
+                let code = parts.next()?.trim().to_string();
+
+                Some((
+                    code.clone(),
+                    Arc::new(CvxCode {
+                        code,
+                        short_description: parts.next()?.to_string(),
+                        full_name: parts.next()?.to_string(),
+                        notes: parts.next()?.to_string(),
+                        vaccine_status: match parts.nth(1)? {
+                            "True" => true,
+                            "False" => false,
+                            val => {
+                                warn!("unknown vaccine status: {val}");
+                                return None;
+                            }
+                        },
+                        last_updated: Date::parse(parts.next()?, &DATE_FORMAT).ok()?,
+                    }),
+                ))
+            })
+            .collect();
+
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(file, &codes)?;
+
+        Ok(codes)
+    }
+
+    #[instrument]
+    fn file_is_new_enough(path: &Path, skip_updates: bool) -> bool {
+        if !path.exists() {
+            debug!("path did not exist");
+            return false;
+        }
+
+        if skip_updates {
+            debug!("skipping updates, ignoring file modification check");
+            return true;
+        }
+
+        let Ok(metadata) = path.metadata() else {
+            warn!("could not get file metadata");
+            return false;
+        };
+
+        let Ok(modified) = metadata.modified() else {
+            warn!("could not get file modified time");
+            return false;
+        };
+
+        let Ok(elapsed) = modified.elapsed() else {
+            warn!("could not calculate elapsed time");
+            return false;
+        };
+
+        elapsed.as_secs() < Self::MAX_AGE_SECS
+    }
+
+    async fn process_scan(&self, data: &str) -> eyre::Result<ShcData> {
         eyre::ensure!(data.len() % 2 == 0, "data length must be even");
 
         let mut decoded_data = String::with_capacity(data.len() / 2);
@@ -395,186 +541,34 @@ impl ShcDecoder {
             .collect();
         debug!(len = cvx_codes.len(), "found referenced cvx codes");
 
-        let data = ShcData {
+        Ok(ShcData {
             verified,
             cvx_codes,
             issuer: issuer.issuer,
             known_issuer,
             entries,
-        };
+        })
+    }
+}
 
-        Ok(data)
+#[async_trait]
+impl Decoder for ShcDecoder {
+    fn decoder_type(&self) -> DecoderType {
+        DecoderType::Shc
     }
 
-    #[instrument(skip_all)]
-    async fn load_vci_issuers(
-        &self,
-        path: &Path,
-        skip_updates: bool,
-    ) -> eyre::Result<Vec<VciIssuerMeta>> {
-        if Self::file_is_new_enough(path, skip_updates) {
-            let file = std::fs::File::open(path)?;
-            match serde_json::from_reader(file) {
-                Ok(codes) => {
-                    debug!("loaded vci issuers from file");
-                    return Ok(codes);
-                }
-                Err(err) => {
-                    warn!("existing file could not be decoded: {err}");
-                }
+    #[instrument(skip_all, fields(iss))]
+    async fn decode(&self, data: &str) -> eyre::Result<DecoderOutcome> {
+        let Some(data) = data.trim().strip_prefix("shc:/") else {
+            return Ok(DecoderOutcome::Skipped);
+        };
+
+        match self.process_scan(data).await {
+            Ok(data) => Ok(DecoderOutcome::DecodedData(super::DecodedData::Shc(data))),
+            Err(err) => {
+                warn!("expected shc data could not be decoded: {err}");
+                Ok(DecoderOutcome::Skipped)
             }
         }
-
-        if skip_updates {
-            warn!("no cached data and skipping vci issuer updates");
-            return Ok(Default::default());
-        }
-
-        let issuers: VciIssuers = self
-            .client
-            .get(Self::VCI_ISSUERS)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        let futs = futures::stream::iter(
-            issuers
-                .participating_issuers
-                .into_iter()
-                .map(|issuer| self.load_vci_issuer(issuer)),
-        );
-        let issuer_metas: Vec<_> = futs
-            .buffer_unordered(4)
-            .filter_map(|res| futures::future::ready(res.ok()))
-            .collect()
-            .await;
-
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(file, &issuer_metas)?;
-
-        Ok(issuer_metas)
-    }
-
-    #[instrument(skip_all, fields(iss = issuer.iss))]
-    async fn load_vci_issuer(&self, issuer: VciIssuer) -> eyre::Result<VciIssuerMeta> {
-        debug!("loading issuer");
-
-        let jwk_set = self
-            .get_jwks(&issuer.iss)
-            .await
-            .tap_err(|err| warn!("could not load issuer: {err}"))
-            .unwrap_or_else(|_| JwkSet { keys: vec![] });
-
-        Ok(VciIssuerMeta { issuer, jwk_set })
-    }
-
-    async fn get_jwks(&self, iss: &str) -> eyre::Result<JwkSet> {
-        Ok(self
-            .client
-            .get(format!("{}/.well-known/jwks.json", iss))
-            .send()
-            .await?
-            .json()
-            .await?)
-    }
-
-    #[instrument(skip_all)]
-    async fn load_cvx_codes(
-        &self,
-        path: &Path,
-        skip_updates: bool,
-    ) -> eyre::Result<HashMap<SmolStr, Arc<CvxCode>>> {
-        static DATE_FORMAT: &[time::format_description::FormatItem<'_>] =
-            format_description!("[year]/[month]/[day]");
-
-        if Self::file_is_new_enough(path, skip_updates) {
-            let file = std::fs::File::open(path)?;
-            match serde_json::from_reader(file) {
-                Ok(codes) => {
-                    debug!("loaded cvx codes from file");
-                    return Ok(codes);
-                }
-                Err(err) => {
-                    warn!("existing file could not be decoded: {err}");
-                }
-            }
-        }
-
-        if skip_updates {
-            warn!("no cached data and skipping cvx code updates");
-            return Ok(Default::default());
-        }
-
-        let data = self
-            .client
-            .get(Self::CVX_CODES)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        let codes: HashMap<_, _> = data
-            .lines()
-            .filter_map(|line| {
-                let mut parts = line.split('|');
-
-                let code = SmolStr::new(parts.next()?.trim());
-
-                Some((
-                    code.clone(),
-                    Arc::new(CvxCode {
-                        code,
-                        short_description: parts.next()?.to_string(),
-                        full_name: parts.next()?.to_string(),
-                        notes: parts.next()?.to_string(),
-                        vaccine_status: match parts.nth(1)? {
-                            "True" => true,
-                            "False" => false,
-                            val => {
-                                warn!("unknown vaccine status: {val}");
-                                return None;
-                            }
-                        },
-                        last_updated: Date::parse(parts.next()?, &DATE_FORMAT).ok()?,
-                    }),
-                ))
-            })
-            .collect();
-
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(file, &codes)?;
-
-        Ok(codes)
-    }
-
-    #[instrument]
-    fn file_is_new_enough(path: &Path, skip_updates: bool) -> bool {
-        if !path.exists() {
-            debug!("path did not exist");
-            return false;
-        }
-
-        if skip_updates {
-            debug!("skipping updates, ignoring file modification check");
-            return true;
-        }
-
-        let Ok(metadata) = path.metadata() else {
-            warn!("could not get file metadata");
-            return false;
-        };
-
-        let Ok(modified) = metadata.modified() else {
-            warn!("could not get file modified time");
-            return false;
-        };
-
-        let Ok(elapsed) = modified.elapsed() else {
-            warn!("could not calculate elapsed time");
-            return false;
-        };
-
-        elapsed.as_secs() < Self::MAX_AGE_SECS
     }
 }

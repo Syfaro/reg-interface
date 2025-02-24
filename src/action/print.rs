@@ -1,11 +1,11 @@
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use futures::TryStreamExt;
 use ipp::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tracing::{debug, info, instrument};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct PrintConfig {
     #[serde(default = "PrintConfig::default_cups_host")]
     cups_host: String,
