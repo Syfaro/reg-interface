@@ -5,7 +5,7 @@ A utility to perform registration-related activites on staff machines.
 The core features are:
 
 - Scanning, decoding, and transforming results of barcode and ID scanners
-- Allow enqueuing print jobs to the local machine from a remote server
+- Enqueuing print jobs to the local machine from a remote server
 
 ## Configuration
 
@@ -62,8 +62,8 @@ usage_page = 65283
 
 ### Connections
 
-After a barcode has been processed, it will be sent to all connection targets
-that support the decoder.
+After a barcode has been processed, it will be transformed and then sent to the
+relevant connections.
 
 ```toml
 [[connection]]
@@ -82,8 +82,8 @@ publish_topic = "client/12345"
 action_topic = "client/12345/action"
 ```
 
-If the target supports bidirectional communication (WebSockets or MQTT), you
-may enable `allow_actions` to process actions coming from the target.
+If the connection supports bidirectional communication (such as MQTT), you
+may enable `allow_actions` to process actions coming from the connection.
 
 ### Transformations
 
