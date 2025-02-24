@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install musl-tools libdbus-1-dev pkg-config -y
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - run: cargo build --release --features vendored --target x86_64-unknown-linux-musl
       - run: |
           mkdir artifacts
           mv target/x86_64-unknown-linux-musl/release/reg-interface artifacts/reg-interface-x86_64-unknown-linux-musl
