@@ -23,7 +23,12 @@ jobs:
             runs-on: macos-14
             target: aarch64-apple-darwin
 
+    permissions:
+      contents: write
+      packages: write
+
     runs-on: ${{ matrix.platform.runs-on }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
