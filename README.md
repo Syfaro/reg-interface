@@ -70,7 +70,6 @@ relevant connections.
 name = "http"
 connection_type = "http"
 url = "http://localhost:8080"
-user_agent = "reg-interface"
 headers = { "x-secret" = "some-value" }
 
 [[connection]]
