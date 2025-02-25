@@ -1,30 +1,40 @@
-name: Artifacts
+name: Release
 
 on:
   push:
-    tags:
-      - "*"
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    name: Release - ${{ matrix.platform.os-name }}
+    strategy:
+      matrix:
+        platform:
+          - os-name: Linux-x86_64
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
 
-    permissions:
-      contents: write
-      packages: write
+          - os-name: Linux-aarch64
+            runs-on: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
 
+          - os-name: macOS-aarch64
+            runs-on: macos-14
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.platform.runs-on }}
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup target add x86_64-unknown-linux-musl
-      - run: rustup toolchain install stable --profile minimal
-      - run: |
-          sudo apt-get update -y
-          sudo apt-get install musl-tools libdbus-1-dev pkg-config -y
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --features vendored --target x86_64-unknown-linux-musl
-      - run: |
-          mkdir artifacts
-          mv target/x86_64-unknown-linux-musl/release/reg-interface artifacts/reg-interface-x86_64-unknown-linux-musl
-      - uses: ncipollo/release-action@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build binary
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          artifacts: "artifacts/*"
+          target: ${{ matrix.platform.target }}
+          command: build
+          args: "--locked --release --features vendored"
+          force-use-cross: true
+      - name: Publish artifacts and release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: reg-interface
+          changes-file: ""
+          target: ${{ matrix.platform.target }}

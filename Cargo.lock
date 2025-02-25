@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aamva"
 version = "0.1.0"
-source = "git+https://github.com/Syfaro/aamva-rs#1304b78d2563c885a167a05f69a7a301857b2133"
+source = "git+https://github.com/Syfaro/aamva-rs.git#1304b78d2563c885a167a05f69a7a301857b2133"
 dependencies = [
  "itertools",
  "jiff",
@@ -2962,7 +2962,6 @@ dependencies = [
  "ble-peripheral-rust",
  "btleplug",
  "ciborium",
- "dbus",
  "futures",
  "hex",
  "isomdl",
@@ -3944,6 +3943,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "dbus",
  "eyre",
  "flate2",
  "futures",
@@ -3955,6 +3955,7 @@ dependencies = [
  "jpeg2k",
  "jsonwebtoken",
  "mdl-verifier",
+ "nfc1",
  "open",
  "rand 0.9.0",
  "regex",
