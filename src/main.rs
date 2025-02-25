@@ -24,8 +24,8 @@ pub struct Config {
     pub transform: transform::TransformConfig,
     #[serde(default)]
     pub action: action::ActionConfig,
-    pub input: Vec<input::InputConfig>,
-    pub connection: Vec<connection::ConnectionConfig>,
+    pub inputs: Vec<input::InputConfig>,
+    pub connections: Vec<connection::ConnectionConfig>,
 }
 
 type RunningTasks = Vec<(String, JoinHandle<eyre::Result<()>>)>;
@@ -40,7 +40,6 @@ async fn main() -> eyre::Result<()> {
     let config_path = std::path::PathBuf::from(
         std::env::var("REG_INTERFACE_CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string()),
     );
-
     debug!(path = %config_path.display(), "loading config");
 
     let config_contents = tokio::fs::read_to_string(&config_path)
@@ -85,7 +84,7 @@ async fn main() -> eyre::Result<()> {
         token.clone(),
         &mut tasks,
         action_tx,
-        config.connection.clone(),
+        config.connections.clone(),
     )
     .await?;
 

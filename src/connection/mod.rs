@@ -2,11 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_with::{DisplayFromStr, OneOrMany, serde_as};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
-use url::Url;
 
 use crate::{RunningTasks, action::ConnectionAction};
 
@@ -24,32 +22,8 @@ pub struct ConnectionConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "connection_type", rename_all = "lowercase")]
 pub enum ConnectionTypeConfig {
-    Http(ConnectionTypeHttpConfig),
-    Mqtt(ConnectionTypeMqttConfig),
-}
-
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
-pub struct ConnectionTypeHttpConfig {
-    #[serde_as(as = "DisplayFromStr")]
-    pub url: Url,
-    pub timeout: Option<u64>,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-}
-
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
-pub struct ConnectionTypeMqttConfig {
-    #[serde_as(as = "DisplayFromStr")]
-    pub url: Url,
-    pub client_id: Option<String>,
-    pub publish_topic: String,
-    #[serde(default)]
-    pub allow_actions: bool,
-    #[serde_as(as = "OneOrMany<_>")]
-    pub action_topic: Vec<String>,
-    pub action_topic_prefix: Option<String>,
+    Http(http::ConnectionTypeHttpConfig),
+    Mqtt(mqtt::ConnectionTypeMqttConfig),
 }
 
 #[async_trait]

@@ -152,7 +152,7 @@ pub async fn create_stream(
         tasks.push(("mdl".to_string(), mdl_task));
     }
 
-    let mut input_rx = create_inputs(config.input, tasks, token.clone()).await?;
+    let mut input_rx = create_inputs(config.inputs, tasks, token.clone()).await?;
 
     let decode_task = tokio::spawn(async move {
         while let Some((input_name, input_data)) = input_rx.recv().await {

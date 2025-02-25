@@ -47,12 +47,12 @@ Any number of serial and USB HID (using the point of sale protocol) barcode
 scanners can be configured.
 
 ```toml
-[[input]]
+[[inputs]]
 name = "serial-scanner"
 path = "/dev/tty.usbmodemXXXX"
 baud_rate = 115200
 
-[[input]]
+[[inputs]]
 name = "hid-scanner"
 vendor_id = 1504
 product_id = 1536
@@ -66,19 +66,23 @@ After a barcode has been processed, it will be transformed and then sent to the
 relevant connections.
 
 ```toml
-[[connection]]
+[[connections]]
 name = "http"
 connection_type = "http"
 url = "http://localhost:8080"
 headers = { "x-secret" = "some-value" }
 
-[[connection]]
+[[connections]]
 name = "mqtt"
 connection_type = "mqtt"
-url = "mqtt://user:pass@localhost"
+url = "mqtt://localhost"
 allow_actions = true
 publish_topic = "client/12345"
 action_topic = "client/12345/action"
+
+[connections.credentials]
+username = "user"
+password = "pass"
 ```
 
 If the connection supports bidirectional communication (such as MQTT), you

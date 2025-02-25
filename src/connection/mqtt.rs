@@ -4,15 +4,35 @@ use async_trait::async_trait;
 use eyre::OptionExt;
 use rand::Rng;
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport};
+use serde::Deserialize;
+use serde_with::{DisplayFromStr, OneOrMany, serde_as};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
+use url::Url;
 
-use crate::{
-    RunningTasks,
-    action::ConnectionAction,
-    connection::{Connection, ConnectionTypeMqttConfig},
-};
+use crate::{RunningTasks, action::ConnectionAction, connection::Connection};
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionTypeMqttConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub url: Url,
+    pub client_id: Option<String>,
+    pub publish_topic: String,
+    #[serde(default)]
+    pub allow_actions: bool,
+    #[serde_as(as = "OneOrMany<_>")]
+    pub action_topic: Vec<String>,
+    pub action_topic_prefix: Option<String>,
+    pub credentials: Option<MqttCredentials>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MqttCredentials {
+    pub username: String,
+    pub password: String,
+}
 
 pub struct MqttConnection {
     topic: String,
@@ -58,8 +78,8 @@ impl MqttConnection {
         );
         opts.set_transport(transport);
 
-        if let Some(password) = config.url.password() {
-            opts.set_credentials(config.url.username(), password);
+        if let Some(creds) = config.credentials.clone() {
+            opts.set_credentials(creds.username, creds.password);
         }
 
         let (client, events) = AsyncClient::new(opts, 1);

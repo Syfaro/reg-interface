@@ -2,9 +2,21 @@ use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 use url::Url;
 
-use super::{Connection, ConnectionTypeHttpConfig};
+use super::Connection;
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionTypeHttpConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub url: Url,
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
 
 pub struct HttpConnection {
     url: Url,
