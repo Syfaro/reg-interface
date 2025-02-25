@@ -5,12 +5,14 @@ use serde::Deserialize;
 use tokio::{io::AsyncReadExt, sync::mpsc};
 use tracing::{debug, instrument};
 
-use super::{Decoder, DecoderOutcome, DecoderType};
+use crate::decoder::{Decoder, DecoderOutcome, DecoderType};
 
 #[derive(Clone, Default, Debug, Deserialize)]
 pub struct MdlConfig {
     pub input_name: Option<String>,
     pub timeout: Option<u64>,
+    #[serde(default)]
+    pub extract_portraits: bool,
     pub request_elements: Option<HashMap<String, HashMap<String, bool>>>,
     pub certificates_path: Option<PathBuf>,
     pub nfc_connstring: Option<String>,

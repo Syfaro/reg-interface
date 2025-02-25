@@ -7,14 +7,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use server::ImageStore;
+
 mod action;
 mod connection;
 mod decoder;
 mod input;
+mod server;
 mod transform;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    pub server: Option<server::ServerConfig>,
     #[serde(default)]
     pub decoder: decoder::DecoderConfig,
     pub transform: transform::TransformConfig,
@@ -53,11 +57,27 @@ async fn main() -> eyre::Result<()> {
     let token = CancellationToken::new();
     let mut tasks = Vec::new();
 
+    let image_store = ImageStore::new(config.server.is_some());
+    if let Some(server_config) = config.server.clone() {
+        server::start(
+            server_config,
+            image_store.clone(),
+            token.clone(),
+            &mut tasks,
+        )
+        .await?;
+    }
+
     let (qr_tx, qr_rx) = mpsc::channel(1);
     let (action_tx, action_rx) = mpsc::channel(1);
 
     let decoders = Arc::new(decoder::DecoderManager::new(config.decoder.clone(), qr_tx).await?);
-    let transform_manager = transform::TransformManager::new(config.transform.clone()).await?;
+    let transform_manager = transform::TransformManager::new(
+        config.transform.clone(),
+        config.decoder.mdl.extract_portraits,
+        image_store,
+    )
+    .await?;
 
     action::start(config.action.clone(), token.clone(), action_rx, &mut tasks).await?;
 
@@ -147,10 +167,10 @@ async fn process_input_stream(
     connection_manager: connection::ConnectionManager,
     mut rx: mpsc::Receiver<(Option<String>, decoder::DecodedDataContext)>,
 ) -> eyre::Result<()> {
-    while let Some((original_data, data_context)) = rx.recv().await {
+    while let Some((original_data, mut data_context)) = rx.recv().await {
         debug!("got data: {data_context:?}");
 
-        let (transformed_data, changes) = transform_manager.transform(&data_context)?;
+        let (transformed_data, changes) = transform_manager.transform(&mut data_context)?;
 
         let transformed_data = if let Some(transformed_data) = transformed_data {
             decoders

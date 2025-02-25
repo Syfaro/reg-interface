@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 use url::Url;
 
-use crate::{action::ConnectionAction, RunningTasks};
+use crate::{RunningTasks, action::ConnectionAction};
 
 mod http;
 mod mqtt;
@@ -51,8 +51,6 @@ pub struct ConnectionTypeMqttConfig {
     pub action_topic: Vec<String>,
     pub action_topic_prefix: Option<String>,
 }
-
-
 
 #[async_trait]
 pub trait Connection {
