@@ -67,10 +67,24 @@ async fn main() -> eyre::Result<()> {
         .await?;
     }
 
-    let (qr_tx, qr_rx) = mpsc::channel(1);
     let (action_tx, action_rx) = mpsc::channel(1);
 
-    let decoders = Arc::new(decoder::DecoderManager::new(config.decoder.clone(), qr_tx).await?);
+    let esp_mdl = if config
+        .decoder
+        .enabled_decoders
+        .as_ref()
+        .map(|decoders| decoders.contains(&decoder::DecoderType::Mdl))
+        .unwrap_or_default()
+    {
+        Some(Arc::new(
+            decoder::mdl::EspMdl::new(config.decoder.mdl.clone(), token.clone()).await?,
+        ))
+    } else {
+        None
+    };
+
+    let decoders =
+        Arc::new(decoder::DecoderManager::new(config.decoder.clone(), esp_mdl.clone()).await?);
     let transform_manager = transform::TransformManager::new(
         config.transform.clone(),
         config.decoder.mdl.extract_portraits,
@@ -89,7 +103,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
 
     let input_stream =
-        input::create_stream(config, token.clone(), &mut tasks, decoders.clone(), qr_rx).await?;
+        input::create_stream(config, token.clone(), &mut tasks, decoders.clone(), esp_mdl).await?;
     tasks.push((
         "input-stream".to_string(),
         tokio::spawn(process_input_stream(

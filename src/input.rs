@@ -5,7 +5,6 @@ use serde::Deserialize;
 use tap::Tap;
 use tokio::{io::AsyncReadExt, select, sync::mpsc, task::JoinHandle, time::interval};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, instrument, trace};
 
@@ -99,22 +98,11 @@ pub async fn create_stream(
     token: CancellationToken,
     tasks: &mut super::RunningTasks,
     decoders: Arc<decoder::DecoderManager>,
-    qr_rx: mpsc::Receiver<String>,
+    esp_mdl: Option<Arc<decoder::mdl::EspMdl>>,
 ) -> eyre::Result<mpsc::Receiver<(Option<String>, decoder::DecodedDataContext)>> {
     let (data_tx, data_rx) = mpsc::channel(1);
 
-    if config
-        .decoder
-        .enabled_decoders
-        .as_ref()
-        .map(|decoders| decoders.contains(&decoder::DecoderType::Mdl))
-        .unwrap_or_default()
-    {
-        let mut mdl_verifier =
-            decoder::mdl::create_mdl_verifier(config.decoder.mdl.clone()).await?;
-
-        mdl_verifier.add_qr_stream(ReceiverStream::new(qr_rx));
-
+    if let Some(esp_mdl) = esp_mdl {
         let mdl_input_name = config
             .decoder
             .mdl
@@ -122,34 +110,33 @@ pub async fn create_stream(
             .clone()
             .unwrap_or_else(|| "mdl".to_string());
 
-        let mut rx = mdl_verifier.start(token.clone()).await?;
+        let (mdl_tx, mut mdl_rx) = mpsc::channel(1);
+        let mdl_task = esp_mdl.create_input_task(mdl_tx);
+        tasks.push(("mdl".to_string(), mdl_task));
+
         let data_tx_clone = data_tx.clone();
-        let mdl_task = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    mdl_verifier::VerifierEvent::AuthenticationOutcome(outcome) => {
-                        if let Err(err) = data_tx_clone
-                            .send((
-                                None,
-                                decoder::DecodedDataContext {
-                                    input_name: mdl_input_name.clone(),
-                                    decoder_type: decoder::DecoderType::Mdl,
-                                    data: decoder::DecodedData::Mdl(outcome),
-                                },
-                            ))
-                            .await
-                        {
-                            error!("could not send verifier event: {err}");
-                            break;
-                        }
-                    }
-                    other => trace!("got other mdl verifier event: {other:?}"),
+
+        let mdl_process_task = tokio::spawn(async move {
+            while let Some(outcome) = mdl_rx.recv().await {
+                if let Err(err) = data_tx_clone
+                    .send((
+                        None,
+                        decoder::DecodedDataContext {
+                            input_name: mdl_input_name.clone(),
+                            decoder_type: decoder::DecoderType::Mdl,
+                            data: decoder::DecodedData::Mdl(outcome),
+                        },
+                    ))
+                    .await
+                {
+                    error!("could not send verifier event: {err}");
+                    break;
                 }
             }
 
             Ok(())
         });
-        tasks.push(("mdl".to_string(), mdl_task));
+        tasks.push(("mdl-process".to_string(), mdl_process_task));
     }
 
     let mut input_rx = create_inputs(config.inputs, tasks, token.clone()).await?;
