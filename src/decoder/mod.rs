@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use isomdl::presentation::authentication::ResponseAuthenticationOutcome;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::warn;
 
 pub mod mdl;
@@ -120,7 +122,10 @@ pub struct DecoderManager {
 }
 
 impl DecoderManager {
-    pub async fn new(config: DecoderConfig, qr_sender: mpsc::Sender<String>) -> eyre::Result<Self> {
+    pub async fn new(
+        config: DecoderConfig,
+        esp_mdl: Option<Arc<mdl::EspMdl>>,
+    ) -> eyre::Result<Self> {
         let enabled_decoders = config.enabled_decoders.unwrap_or_else(|| {
             [DecoderType::Aamva, DecoderType::Url, DecoderType::Generic]
                 .into_iter()
@@ -134,8 +139,8 @@ impl DecoderManager {
             decoders.push(Box::new(AamvaDecoder));
         }
 
-        if enabled_decoders.contains(&DecoderType::Mdl) {
-            decoders.push(Box::new(mdl::MdlDecoder::new(qr_sender).await));
+        if let Some(esp_mdl) = esp_mdl {
+            decoders.push(Box::new(mdl::MdlDecoder::new(esp_mdl).await));
         }
 
         if enabled_decoders.contains(&DecoderType::Shc) {
