@@ -23,9 +23,9 @@ enabled_decoders = ["aamva", "mdl", "shc", "url", "generic"]
 
 [decoder.mdl]
 input_name = "mdl"
-timeout = 120
+path = "/dev/ttyACM0"
+baud = 115200
 certificates_path = "mdl-certificates"
-nfc_connstring = "pn532_uart:/dev/ttyACM0"
 
 [decoder.mdl.request_elements."org.iso.18013.5.1"]
 given_name = false
