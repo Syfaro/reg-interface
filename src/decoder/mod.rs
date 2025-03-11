@@ -32,6 +32,7 @@ pub struct UrlConfig {
 pub enum DecoderType {
     Aamva,
     Mdl,
+    Mrtd,
     Shc,
     Url,
     Generic,
@@ -42,6 +43,7 @@ impl std::fmt::Display for DecoderType {
         match self {
             Self::Aamva => write!(f, "AAMVA"),
             Self::Mdl => write!(f, "mDL"),
+            Self::Mrtd => write!(f, "MRTD"),
             Self::Shc => write!(f, "SHC"),
             Self::Url => write!(f, "URL"),
             Self::Generic => write!(f, "Generic"),
@@ -70,6 +72,8 @@ pub enum DecodedData {
     Aamva(Box<aamva::DecodedData>),
     #[serde(rename = "mDL")]
     Mdl(ResponseAuthenticationOutcome),
+    #[serde(rename = "MRTD")]
+    Mrtd(mrtd::Document),
     #[serde(rename = "SHC")]
     Shc(shc::ShcData),
     Url(String),
@@ -81,6 +85,7 @@ impl DecodedData {
         let dynamic = match self {
             DecodedData::Aamva(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Mdl(data) => rhai::serde::to_dynamic(data)?,
+            DecodedData::Mrtd(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Shc(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Url(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Generic(data) => rhai::serde::to_dynamic(data)?,
@@ -95,6 +100,7 @@ impl DecodedData {
         match self {
             DecodedData::Aamva(_) => DecoderType::Aamva,
             DecodedData::Mdl(_) => DecoderType::Mdl,
+            DecodedData::Mrtd(_) => DecoderType::Mrtd,
             DecodedData::Shc(_) => DecoderType::Shc,
             DecodedData::Url(_) => DecoderType::Url,
             DecodedData::Generic(_) => DecoderType::Generic,
@@ -127,9 +133,14 @@ impl DecoderManager {
         esp_mdl: Option<Arc<mdl::EspMdl>>,
     ) -> eyre::Result<Self> {
         let enabled_decoders = config.enabled_decoders.unwrap_or_else(|| {
-            [DecoderType::Aamva, DecoderType::Url, DecoderType::Generic]
-                .into_iter()
-                .collect()
+            [
+                DecoderType::Aamva,
+                DecoderType::Mrtd,
+                DecoderType::Url,
+                DecoderType::Generic,
+            ]
+            .into_iter()
+            .collect()
         });
 
         let mut decoders: Vec<Box<dyn Decoder + Send + Sync>> =
@@ -141,6 +152,10 @@ impl DecoderManager {
 
         if let Some(esp_mdl) = esp_mdl {
             decoders.push(Box::new(mdl::MdlDecoder::new(esp_mdl).await));
+        }
+
+        if enabled_decoders.contains(&DecoderType::Mrtd) {
+            decoders.push(Box::new(MrtdDecoder));
         }
 
         if enabled_decoders.contains(&DecoderType::Shc) {
@@ -212,6 +227,23 @@ impl Decoder for AamvaDecoder {
                 warn!("expected aamva data could not be decoded: {err}");
                 Ok(DecoderOutcome::Consumed)
             }
+        }
+    }
+}
+
+pub struct MrtdDecoder;
+
+#[async_trait]
+impl Decoder for MrtdDecoder {
+    fn decoder_type(&self) -> DecoderType {
+        DecoderType::Mrtd
+    }
+
+    async fn decode(&self, data: &str) -> eyre::Result<DecoderOutcome> {
+        if let Ok(data) = mrtd::parse(data) {
+            Ok(DecoderOutcome::DecodedData(DecodedData::Mrtd(data)))
+        } else {
+            Ok(DecoderOutcome::Skipped)
         }
     }
 }

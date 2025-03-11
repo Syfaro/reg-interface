@@ -2821,6 +2821,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7627d8bbeb17edbf1c3f74b21488e4af680040da89713b4217d0010e9cbd97e"
 
 [[package]]
+name = "mrtd"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76b293c9fda8b2fa29ba9d326cda91e7c123502d69025f860b8246e670a75c7e"
+dependencies = [
+ "chrono",
+ "lazy_static",
+ "regex",
+ "serde",
+]
+
+[[package]]
 name = "multibase"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3678,6 +3690,7 @@ dependencies = [
  "isomdl",
  "jpeg2k",
  "jsonwebtoken",
+ "mrtd",
  "nfc1",
  "open",
  "postcard",
