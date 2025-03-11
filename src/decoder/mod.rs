@@ -8,6 +8,7 @@ use isomdl::presentation::authentication::ResponseAuthenticationOutcome;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+pub mod cac;
 pub mod mdl;
 pub mod shc;
 
@@ -33,6 +34,7 @@ pub enum DecoderType {
     Aamva,
     Mdl,
     Mrtd,
+    Cac,
     Shc,
     Url,
     Generic,
@@ -44,6 +46,7 @@ impl std::fmt::Display for DecoderType {
             Self::Aamva => write!(f, "AAMVA"),
             Self::Mdl => write!(f, "mDL"),
             Self::Mrtd => write!(f, "MRTD"),
+            Self::Cac => write!(f, "CAC"),
             Self::Shc => write!(f, "SHC"),
             Self::Url => write!(f, "URL"),
             Self::Generic => write!(f, "Generic"),
@@ -74,6 +77,8 @@ pub enum DecodedData {
     Mdl(ResponseAuthenticationOutcome),
     #[serde(rename = "MRTD")]
     Mrtd(mrtd::Document),
+    #[serde(rename = "CAC")]
+    Cac(cac::CacData),
     #[serde(rename = "SHC")]
     Shc(shc::ShcData),
     Url(String),
@@ -86,6 +91,7 @@ impl DecodedData {
             DecodedData::Aamva(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Mdl(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Mrtd(data) => rhai::serde::to_dynamic(data)?,
+            DecodedData::Cac(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Shc(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Url(data) => rhai::serde::to_dynamic(data)?,
             DecodedData::Generic(data) => rhai::serde::to_dynamic(data)?,
@@ -101,6 +107,7 @@ impl DecodedData {
             DecodedData::Aamva(_) => DecoderType::Aamva,
             DecodedData::Mdl(_) => DecoderType::Mdl,
             DecodedData::Mrtd(_) => DecoderType::Mrtd,
+            DecodedData::Cac(_) => DecoderType::Cac,
             DecodedData::Shc(_) => DecoderType::Shc,
             DecodedData::Url(_) => DecoderType::Url,
             DecodedData::Generic(_) => DecoderType::Generic,
@@ -136,6 +143,7 @@ impl DecoderManager {
             [
                 DecoderType::Aamva,
                 DecoderType::Mrtd,
+                DecoderType::Cac,
                 DecoderType::Url,
                 DecoderType::Generic,
             ]
@@ -156,6 +164,10 @@ impl DecoderManager {
 
         if enabled_decoders.contains(&DecoderType::Mrtd) {
             decoders.push(Box::new(MrtdDecoder));
+        }
+
+        if enabled_decoders.contains(&DecoderType::Cac) {
+            decoders.push(Box::new(cac::CacDecoder));
         }
 
         if enabled_decoders.contains(&DecoderType::Shc) {
