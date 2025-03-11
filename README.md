@@ -19,7 +19,15 @@ by default, but those requiring specific setup such as mDL and SHC are not.
 
 ```toml
 [decoder]
-enabled_decoders = ["aamva", "mdl", "shc", "url", "generic"]
+enabled_decoders = [
+  "aamva",
+  "mdl",
+  "mrtd",
+  "cac",
+  "shc",
+  "url",
+  "generic"
+]
 
 [decoder.mdl]
 input_name = "mdl"
