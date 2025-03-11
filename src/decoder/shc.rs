@@ -4,6 +4,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -217,7 +218,9 @@ impl ShcDecoder {
     const MAX_AGE_SECS: u64 = 60 * 60 * 24 * 7;
 
     pub async fn new(config: ShcConfig) -> eyre::Result<Self> {
-        let client = reqwest::Client::default();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
 
         let cache_dir = config
             .cache_dir
