@@ -9,9 +9,6 @@ publish = false
 allow-branch = ["main"]
 sign-tag = true
 
-[features]
-vendored = ["nfc1/vendored", "nfc1/drivers", "nfc1/default_drivers", "dbus/vendored"]
-
 [dependencies]
 aamva = { git = "https://github.com/Syfaro/aamva-rs.git", version = "0.1.0" }
 async-hid = "0.2.0"
@@ -29,7 +26,6 @@ isomdl = { git = "https://github.com/Syfaro/isomdl.git", branch = "handover-impr
 jpeg2k = { version = "0.9.1", features = ["image"] }
 jsonwebtoken = "9.3.0"
 mrtd = { version = "0.5.2", features = ["serde"] }
-nfc1 = { version = "0.5.2", default-features = false }
 open = "5.3.0"
 postcard = { version = "1.1.1", default-features = false, features = ["alloc"] }
 rand = "0.9.0"
@@ -41,13 +37,13 @@ reqwest = { version = "0.12.5", default-features = false, features = [
 ] }
 rhai = { version = "1.21.0", features = ["serde", "sync"] }
 rumqttc = { version = "0.24.0", features = ["url", "websocket"] }
-serde = { version = "1.0.218", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.139"
 serde_with = "3.12.0"
 sha2 = "0.10.8"
 tap = "1.0.1"
-time = { version = "0.3.36", features = ["macros", "parsing", "serde", "serde-human-readable"] }
-tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread", "signal"] }
+time = { version = "0.3.39", features = ["macros", "parsing", "serde", "serde-human-readable"] }
+tokio = { version = "1.44.0", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-serial = "5.4.4"
 tokio-stream = "0.1.17"
 tokio-util = "0.7.11"
@@ -56,6 +52,3 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url = "2.5.2"
 uuid = "1.15.1"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-dbus = { version = "0.9.7", optional = true }
