@@ -1,7 +1,9 @@
 use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+use url::Url;
 
 use crate::RunningTasks;
 
@@ -27,9 +29,22 @@ impl ConnectionAction {
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Deserialize)]
-pub struct ConnectionActionPrint {
-    pub url: String,
+#[serde(untagged)]
+pub enum ConnectionActionPrint {
+    UrlAndData {
+        #[serde_as(as = "DisplayFromStr")]
+        url: Url,
+        data: Vec<String>,
+    },
+    Url {
+        #[serde_as(as = "DisplayFromStr")]
+        url: Url,
+    },
+    Data {
+        data: String,
+    },
 }
 
 pub async fn start(
@@ -63,9 +78,9 @@ async fn action_task(
 
             action = action_rx.recv() => {
                 match action {
-                    Some(ConnectionAction::Print(ConnectionActionPrint { url })) => {
+                    Some(ConnectionAction::Print(print_action)) => {
                         if let Some(printer) = &printer {
-                            printer.print_url(&url).await?;
+                            printer.print(print_action).await?;
                         } else {
                             warn!("got print action but had no printer");
                         }
