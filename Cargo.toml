@@ -9,6 +9,9 @@ publish = false
 allow-branch = ["main"]
 sign-tag = true
 
+[features]
+pdf = ["pdfium-render"]
+
 [dependencies]
 aamva = { git = "https://github.com/Syfaro/aamva-rs.git", version = "0.1.0" }
 async-hid = "0.2.0"
@@ -23,10 +26,12 @@ image = { version = "0.25.5", default-features = false }
 infer = "0.19.0"
 ipp = { version = "5.2.0", default-features = false, features = ["async", "async-client", "serde"] }
 isomdl = { git = "https://github.com/Syfaro/isomdl.git", branch = "handover-improvements", version = "0.1.0" }
+itertools = "0.14.0"
 jpeg2k = { version = "0.9.1", features = ["image"] }
 jsonwebtoken = "9.3.0"
 mrtd = { version = "0.5.2", features = ["serde"] }
 open = "5.3.0"
+pdfium-render = { version = "0.8.28", optional = true }
 postcard = { version = "1.1.1", default-features = false, features = ["alloc"] }
 rand = "0.9.0"
 regex = "1.11.1"
