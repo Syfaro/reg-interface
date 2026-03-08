@@ -139,7 +139,7 @@ impl MqttConnection {
 
                             let action: ConnectionAction = if let Some(prefix) = &config.action_topic_prefix {
                                 if let Some(stripped_topic) = publish.topic.strip_prefix(prefix) {
-                                    if let Some(action) = ConnectionAction::from_name(stripped_topic, &publish.payload).transpose()? {
+                                    if let Some(action) = ConnectionAction::from_name(&stripped_topic[1..], &publish.payload).transpose()? {
                                         action
                                     } else {
                                         warn!(topic = publish.topic, "could not determine action from topic");

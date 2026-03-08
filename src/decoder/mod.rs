@@ -252,7 +252,7 @@ impl Decoder for MrtdDecoder {
     }
 
     async fn decode(&self, data: &str) -> eyre::Result<DecoderOutcome> {
-        if let Ok(data) = mrtd::parse(data) {
+        if let Ok(data) = mrtd::parse(&data.replace(char::is_whitespace, "")) {
             Ok(DecoderOutcome::DecodedData(DecodedData::Mrtd(data)))
         } else {
             Ok(DecoderOutcome::Skipped)
