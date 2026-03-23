@@ -114,6 +114,7 @@ impl serde::Serialize for FhirDateTime {
             ),
             Self::DateTime { date_time } => serializer.serialize_str(
                 &date_time
+                    .assume_utc()
                     .format(&Rfc3339)
                     .map_err(serde::ser::Error::custom)?,
             ),
